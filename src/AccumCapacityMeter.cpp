@@ -46,15 +46,19 @@ void setup() {
 
 }
 
-unsigned long lastTimeRead_us = 0;
-bool enableWriteCom;
+unsigned long lastTimeMeasure_us = 0;
+unsigned long lastTimeSerial_us = 0;
+bool enableSendMeasurementsToSerial;
 bool enableDischarge;
 
 unsigned long dischargeTime_s; 
 unsigned long sumOfSeveralPeriods_us; 
 float accumCapacity_AH;
+float threshholdVoltage; //Log capacity when reaching threshhold voltage
+
 constexpr float us_in_hour = 60.0 * 60.0 * 1000.0 * 1000.0;
 void printTime(unsigned long time_s, char startXpos, char startYpos, char charWidth);
+void sendMeasurementsToSerial(float Voltage, float Capacity_AH, unsigned long dischargeTime_s, float Current);
 
 // struct AccumCapacityRecord
 // {
@@ -64,15 +68,18 @@ void printTime(unsigned long time_s, char startXpos, char startYpos, char charWi
 // 	unsigned long dischargeTime_s;
 // };
 
+// constexpr char recordsInEEPROM = (EEPROM.length() / sizeof(AccumCapacityRecord)) - 1;
+// constexpr char offssetOfRecords = 4;
+
 
 void loop() {
 
 	encoder.tick();
 
 	unsigned long curTime_us = micros();
-	unsigned long periodFromLastMeasure_us = curTime_us - lastTimeRead_us;
+	unsigned long periodFromLastMeasure_us = curTime_us - lastTimeMeasure_us;
 	if (periodFromLastMeasure_us >= 50000) {
-		lastTimeRead_us = curTime_us;
+		lastTimeMeasure_us = curTime_us;
 
  
 		if (encoder.isClick()){
@@ -86,15 +93,8 @@ void loop() {
 				// tone(LED_BUILTIN, 2000, 500);
 				tone(LED_BUILTIN, 2, 2000);
 
+				threshholdVoltage = 4.2;
  			}
-
-
-			int readed = Serial.read();
-			if (readed > -1) {
-				char command = readed - '0';
-				if (command < 2)
-					enableWriteCom = command;
-			}
 
 			// delay(500);	 
 		}
@@ -103,7 +103,7 @@ void loop() {
 
 		int accumVoltageD = analogRead(pinAnVoltage);
 		float accumVoltage = (accumVoltageD / 1024.0) * voltageKoef;
-		float loadCurrent = accumVoltage / loadResistor;
+		float loadCurrent = enableDischarge ? (accumVoltage / loadResistor) : 0;
 
 		if (enableDischarge) {
 			float accumCapacityPerPeriod_AH = loadCurrent * periodFromLastMeasure_us / us_in_hour;
@@ -116,8 +116,22 @@ void loop() {
 			}
 		}
 
-		//if ((accumVoltage < 3.0) && enableDischarge) { 
-		// Save to EEPROM
+		//Log to EEPROM capacity when reaching threshhold voltage
+		// if ((accumVoltage < threshholdVoltage) && enableDischarge) { 
+		// 	AccumCapacityRecord capacityRecord;
+		// 	capacityRecord.Voltage = accumVoltage;
+		// 	capacityRecord.Current = loadCurrent;
+		// 	capacityRecord.Capacity_AH = accumCapacity_AH;
+		// 	capacityRecord.dischargeTime_s = dischargeTime_s;
+
+		// 	char recordsHead = EEPROM[0];
+		// 	recordsHead = (recordsHead + 1) % recordsInEEPROM;
+
+		// 	EEPROM.put(offssetOfRecords + recordsHead * sizeof(AccumCapacityRecord), capacityRecord);
+
+		// 	// Next log when accum discharges more by 0.1V
+		// 	threshholdVoltage = (round((accumVoltage - 0.1) * 10)) / 10.0;  
+		// }
 
 
 		if ((accumVoltage < 3.0) && enableDischarge) { // stopDischarge
@@ -126,17 +140,6 @@ void loop() {
 			tone(LED_BUILTIN, 1, 2000);
 		}
 
-		if (enableWriteCom) {
-			Serial.print(F("accumVoltage="));
-			Serial.print(accumVoltage); 
-
-			Serial.print(F("\tdischargeTime="));
-			Serial.print(dischargeTime_s); 
-
-			Serial.print(F("\taccumCapacity="));
-			Serial.print(accumCapacity_AH * 1000); 
-
-		}
 
 
 		display.clearBuffer(); 
@@ -171,6 +174,19 @@ void loop() {
 		printTime(time_s, 50, 55, charWidth);
 
 		display.sendBuffer();
+
+
+		if (Serial.available() > 0) {
+			auto str = Serial.readString();
+			if (str == F("meas"))
+				enableSendMeasurementsToSerial = !enableSendMeasurementsToSerial;
+		}
+
+		unsigned long periodFromLastSerial_us = curTime_us - lastTimeSerial_us;
+		if ((periodFromLastSerial_us >= 1000000) && enableSendMeasurementsToSerial) {
+			lastTimeSerial_us = curTime_us;
+			sendMeasurementsToSerial(accumVoltage, accumCapacity_AH, dischargeTime_s, loadCurrent);
+		}
 	}
 
 }
@@ -185,6 +201,23 @@ void printTime(unsigned long time_s, char startXpos, char startYpos, char charWi
 	sprintf_P(t, PSTR("%3dh %02dm %02ds"), (int) hour, (int) min, (int) sec);
 	display.setCursor(startXpos, startYpos);
 	display.print(t);
+}
+
+// void logToEEPROMcapacity()
+
+void sendMeasurementsToSerial(float Voltage, float Capacity_AH, unsigned long dischargeTime_s, float Current) {
+	Serial.print(F("Voltage\t"));
+	Serial.print(Voltage); 
+
+	Serial.print(F("\tCapacity_mAH\t"));
+	Serial.print(Capacity_AH * 1000); 
+
+	Serial.print(F("\tTime_s\t"));
+	Serial.print(dischargeTime_s); 
+
+	Serial.print(F("\tCurrent\t"));
+	Serial.println(Current, 3); 
+
 }
 
 
