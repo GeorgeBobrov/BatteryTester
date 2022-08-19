@@ -23,7 +23,6 @@ void isrCLK() {
 	encoder.tick();
 }
 							
-
 void isrDT() {
 	encoder.tick();
 }
@@ -51,10 +50,20 @@ unsigned long lastTimeRead_us = 0;
 bool enableWriteCom;
 bool enableDischarge;
 
-unsigned long dischargeTime_us; 
+unsigned long dischargeTime_s; 
+unsigned long sumOfSeveralPeriods_us; 
 float accumCapacity_AH;
 constexpr float us_in_hour = 60.0 * 60.0 * 1000.0 * 1000.0;
 void printTime(unsigned long time_s, char startXpos, char startYpos, char charWidth);
+
+// struct AccumCapacityRecord
+// {
+// 	float Voltage;
+// 	float Current;
+// 	float Capacity_AH;
+// 	unsigned long dischargeTime_s;
+// };
+
 
 void loop() {
 
@@ -72,7 +81,7 @@ void loop() {
 			digitalWrite(pinDischarge, enableDischarge);
 
 			if (enableDischarge) {
-				dischargeTime_us = 0;
+				dischargeTime_s = 0;
 				accumCapacity_AH = 0;
 				// tone(LED_BUILTIN, 2000, 500);
 				tone(LED_BUILTIN, 2, 2000);
@@ -99,8 +108,17 @@ void loop() {
 		if (enableDischarge) {
 			float accumCapacityPerPeriod_AH = loadCurrent * periodFromLastMeasure_us / us_in_hour;
 			accumCapacity_AH += accumCapacityPerPeriod_AH;
-			dischargeTime_us += periodFromLastMeasure_us;
+			sumOfSeveralPeriods_us += periodFromLastMeasure_us;
+
+			if (sumOfSeveralPeriods_us > 1000000) {
+				dischargeTime_s += sumOfSeveralPeriods_us / 1000000;
+				sumOfSeveralPeriods_us %= 1000000;
+			}
 		}
+
+		//if ((accumVoltage < 3.0) && enableDischarge) { 
+		// Save to EEPROM
+
 
 		if ((accumVoltage < 3.0) && enableDischarge) { // stopDischarge
 			enableDischarge = false;
@@ -113,7 +131,7 @@ void loop() {
 			Serial.print(accumVoltage); 
 
 			Serial.print(F("\tdischargeTime="));
-			Serial.print(dischargeTime_us); 
+			Serial.print(dischargeTime_s); 
 
 			Serial.print(F("\taccumCapacity="));
 			Serial.print(accumCapacity_AH * 1000); 
@@ -145,7 +163,7 @@ void loop() {
 		display.setCursor(9*charWidth, 40);
 		display.print(accumCapacity_AH * 1000);
 
-		unsigned long time_s = dischargeTime_us / 1000000;
+		unsigned long time_s = dischargeTime_s;
 
 		display.setCursor(0, 55);
 		display.print(F("Time"));
