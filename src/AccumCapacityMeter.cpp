@@ -30,7 +30,9 @@ void isrDT() {
 void setup() {
 	// Buzzer connected to LED_BUILTIN
 	pinMode(LED_BUILTIN, OUTPUT);
+	pinMode(pinDischarge, OUTPUT);
 //	pinMode(pinEncButton, INPUT_PULLUP);
+
 	analogReference(INTERNAL);
 
 	Serial.begin(500000);
@@ -43,7 +45,6 @@ void setup() {
 
 	attachInterrupt(0, isrCLK, CHANGE);
 	attachInterrupt(1, isrDT, CHANGE);
-
 }
 
 unsigned long lastTimeMeasure_us = 0;
@@ -55,21 +56,22 @@ unsigned long dischargeTime_s;
 unsigned long sumOfSeveralPeriods_us; 
 float accumCapacity_AH;
 float threshholdVoltage; //Log capacity when reaching threshhold voltage
+constexpr float threshholdDischargeVoltage = 3.0;
 
 constexpr float us_in_hour = 60.0 * 60.0 * 1000.0 * 1000.0;
-void printTime(unsigned long time_s, char startXpos, char startYpos, char charWidth);
+void printTime(unsigned long time_s, byte startXpos, byte startYpos, byte charWidth);
 void sendMeasurementsToSerial(float Voltage, float Capacity_AH, unsigned long dischargeTime_s, float Current);
 
-// struct AccumCapacityRecord
-// {
-// 	float Voltage;
-// 	float Current;
-// 	float Capacity_AH;
-// 	unsigned long dischargeTime_s;
-// };
+struct AccumCapacityRecord
+{
+	float Voltage;
+	float Current;
+	float Capacity_AH;
+	unsigned long dischargeTime_s;
+};
 
-// constexpr char recordsInEEPROM = (EEPROM.length() / sizeof(AccumCapacityRecord)) - 1;
-// constexpr char offssetOfRecords = 4;
+constexpr byte recordsInEEPROM = (EEPROM.length() / sizeof(AccumCapacityRecord)) - 1;
+constexpr byte offssetOfRecords = 4;
 
 
 void loop() {
@@ -100,8 +102,13 @@ void loop() {
 		}
 
 
-
-		int accumVoltageD = analogRead(pinAnVoltage);
+		// int accumVoltageD = analogRead(pinAnVoltage);
+		constexpr byte averCount = 3;
+		int voltSum = 0;
+		for (byte i = 0; i < averCount; i++)
+			voltSum += analogRead(pinAnVoltage);
+		int accumVoltageD = round(float(voltSum) / averCount);
+		  
 		float accumVoltage = (accumVoltageD / 1024.0) * voltageKoef;
 		float loadCurrent = enableDischarge ? (accumVoltage / loadResistor) : 0;
 
@@ -116,25 +123,27 @@ void loop() {
 			}
 		}
 
-		//Log to EEPROM capacity when reaching threshhold voltage
-		// if ((accumVoltage < threshholdVoltage) && enableDischarge) { 
-		// 	AccumCapacityRecord capacityRecord;
-		// 	capacityRecord.Voltage = accumVoltage;
-		// 	capacityRecord.Current = loadCurrent;
-		// 	capacityRecord.Capacity_AH = accumCapacity_AH;
-		// 	capacityRecord.dischargeTime_s = dischargeTime_s;
+		// Log to EEPROM capacity when reaching threshhold voltage
+		if ((accumVoltage <= threshholdVoltage) && enableDischarge) { 
+			// AccumCapacityRecord capacityRecord;
+			// capacityRecord.Voltage = accumVoltage;
+			// capacityRecord.Current = loadCurrent;
+			// capacityRecord.Capacity_AH = accumCapacity_AH;
+			// capacityRecord.dischargeTime_s = dischargeTime_s;
 
-		// 	char recordsHead = EEPROM[0];
-		// 	recordsHead = (recordsHead + 1) % recordsInEEPROM;
+			// byte recordsHead = EEPROM[0];
+			// recordsHead = (recordsHead + 1) % recordsInEEPROM;
 
-		// 	EEPROM.put(offssetOfRecords + recordsHead * sizeof(AccumCapacityRecord), capacityRecord);
+			// EEPROM.put(offssetOfRecords + recordsHead * sizeof(AccumCapacityRecord), capacityRecord);
 
-		// 	// Next log when accum discharges more by 0.1V
-		// 	threshholdVoltage = (round((accumVoltage - 0.1) * 10)) / 10.0;  
-		// }
+			sendMeasurementsToSerial(accumVoltage, accumCapacity_AH, dischargeTime_s, loadCurrent);
+
+			// Next log when accum discharges more by 0.1V
+			threshholdVoltage = (round((accumVoltage - 0.1) * 10)) / 10.0;  
+		}
 
 
-		if ((accumVoltage < 3.0) && enableDischarge) { // stopDischarge
+		if ((accumVoltage <= threshholdDischargeVoltage) && enableDischarge) { // stopDischarge
 			enableDischarge = false;
 			digitalWrite(pinDischarge, enableDischarge);
 			tone(LED_BUILTIN, 1, 2000);
@@ -144,7 +153,7 @@ void loop() {
 
 		display.clearBuffer(); 
 		display.setFont(u8g2_font_6x10_tf); 
-		constexpr char charWidth = 6;
+		constexpr byte charWidth = 6;
 
 		display.setCursor(0, 10);
 		if (enableDischarge) {
@@ -191,14 +200,14 @@ void loop() {
 
 }
 
-void printTime(unsigned long time_s, char startXpos, char startYpos, char charWidth) {
-	unsigned char sec = time_s % 60;
+void printTime(unsigned long time_s, byte startXpos, byte startYpos, byte charWidth) {
+	byte sec = time_s % 60;
 	time_s = time_s / 60;
-	unsigned char min = time_s % 60;
-	unsigned char hour = time_s / 60;
+	byte min = time_s % 60;
+	byte hour = time_s / 60;
 
 	char t[15];
-	sprintf_P(t, PSTR("%3dh %02dm %02ds"), (int) hour, (int) min, (int) sec);
+	sprintf_P(t, PSTR("%3dh %02dm %02ds"), hour, min, sec);
 	display.setCursor(startXpos, startYpos);
 	display.print(t);
 }
