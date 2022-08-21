@@ -3,6 +3,7 @@
 #include <GyverEncoder.h>
 #include <U8g2lib.h>
 #include <Wire.h>
+#include <GyverPower.h>
 
 
 constexpr byte pinEncButton = A1;
@@ -28,10 +29,22 @@ void isrDT() {
 }
 
 void setup() {
+	//set board_build.f_cpu = 8000000L in platformio.ini and 
+	//divide real freq by 2 (for working on low voltages)
+	power.setSystemPrescaler(PRESCALER_2);
 	// Buzzer connected to LED_BUILTIN
 	pinMode(LED_BUILTIN, OUTPUT);
 	pinMode(pinDischarge, OUTPUT);
 //	pinMode(pinEncButton, INPUT_PULLUP);
+
+	for (byte i = 5; i <= 12; i++)
+		pinMode(i, INPUT_PULLUP);
+
+	pinMode(A0, INPUT_PULLUP);
+	pinMode(A2, INPUT_PULLUP);
+	pinMode(A3, INPUT_PULLUP);
+	pinMode(A6, INPUT_PULLUP);
+		
 
 	analogReference(INTERNAL);
 
@@ -61,6 +74,8 @@ constexpr float threshholdDischargeVoltage = 3.0;
 constexpr float us_in_hour = 60.0 * 60.0 * 1000.0 * 1000.0;
 void printTime(unsigned long time_s, byte startXpos, byte startYpos, byte charWidth);
 void sendMeasurementsToSerial(float Voltage, float Capacity_AH, unsigned long dischargeTime_s, float Current);
+// void printTableCaption(const char * msg);
+void printTableCaption(const __FlashStringHelper *ifsh);
 
 struct AccumCapacityRecord
 {
@@ -70,6 +85,8 @@ struct AccumCapacityRecord
 	unsigned long dischargeTime_s;
 };
 
+// need to to add "constexpr" in EEPROM.h in this line:
+//    constexpr uint16_t length()                    { return E2END + 1; }
 constexpr byte recordsInEEPROM = (EEPROM.length() / sizeof(AccumCapacityRecord)) - 1;
 constexpr byte offssetOfRecords = 4;
 
@@ -95,19 +112,21 @@ void loop() {
 				// tone(LED_BUILTIN, 2000, 500);
 				tone(LED_BUILTIN, 2, 2000);
 
-				threshholdVoltage = 4.2;
- 			}
+				threshholdVoltage = 4.5;
+				printTableCaption(F("***Start Discharge***"));
+ 			} else
+				printTableCaption(F("***Stop Discharge***"));				
 
-			// delay(500);	 
+
 		}
 
 
 		// int accumVoltageD = analogRead(pinAnVoltage);
-		constexpr byte averCount = 3;
+		constexpr byte averCount = 5;
 		int voltSum = 0;
 		for (byte i = 0; i < averCount; i++)
 			voltSum += analogRead(pinAnVoltage);
-		int accumVoltageD = round(float(voltSum) / averCount);
+		float accumVoltageD = float(voltSum) / averCount;
 		  
 		float accumVoltage = (accumVoltageD / 1024.0) * voltageKoef;
 		float loadCurrent = enableDischarge ? (accumVoltage / loadResistor) : 0;
@@ -125,16 +144,17 @@ void loop() {
 
 		// Log to EEPROM capacity when reaching threshhold voltage
 		if ((accumVoltage <= threshholdVoltage) && enableDischarge) { 
-			// AccumCapacityRecord capacityRecord;
-			// capacityRecord.Voltage = accumVoltage;
-			// capacityRecord.Current = loadCurrent;
-			// capacityRecord.Capacity_AH = accumCapacity_AH;
-			// capacityRecord.dischargeTime_s = dischargeTime_s;
+			AccumCapacityRecord capacityRecord;
+			capacityRecord.Voltage = accumVoltage;
+			capacityRecord.Current = loadCurrent;
+			capacityRecord.Capacity_AH = accumCapacity_AH;
+			capacityRecord.dischargeTime_s = dischargeTime_s;
 
-			// byte recordsHead = EEPROM[0];
-			// recordsHead = (recordsHead + 1) % recordsInEEPROM;
+			byte recordsHead = EEPROM[0];
+			recordsHead = (recordsHead + 1) % recordsInEEPROM;
 
-			// EEPROM.put(offssetOfRecords + recordsHead * sizeof(AccumCapacityRecord), capacityRecord);
+			EEPROM.put(offssetOfRecords + recordsHead * sizeof(AccumCapacityRecord), capacityRecord);
+			EEPROM[0] = recordsHead;
 
 			sendMeasurementsToSerial(accumVoltage, accumCapacity_AH, dischargeTime_s, loadCurrent);
 
@@ -146,6 +166,8 @@ void loop() {
 		if ((accumVoltage <= threshholdDischargeVoltage) && enableDischarge) { // stopDischarge
 			enableDischarge = false;
 			digitalWrite(pinDischarge, enableDischarge);
+			printTableCaption(F("***End Discharge***"));				
+
 			tone(LED_BUILTIN, 1, 2000);
 		}
 
@@ -189,6 +211,31 @@ void loop() {
 			auto str = Serial.readString();
 			if (str == F("meas"))
 				enableSendMeasurementsToSerial = !enableSendMeasurementsToSerial;
+
+			if (str == F("log")) {
+				AccumCapacityRecord capacityRecord;
+
+				byte recordsHead = EEPROM[0];
+
+				printTableCaption(F("***Log***"));	
+
+				for (byte i = recordsHead + 1; i < recordsInEEPROM; i++) {
+					EEPROM.get(offssetOfRecords + i * sizeof(AccumCapacityRecord), capacityRecord);
+
+					sendMeasurementsToSerial(capacityRecord.Voltage, capacityRecord.Capacity_AH, 
+						capacityRecord.dischargeTime_s, capacityRecord.Current);
+				}
+				for (byte i = 0; i <= recordsHead; i++) {
+					EEPROM.get(offssetOfRecords + i * sizeof(AccumCapacityRecord), capacityRecord);
+
+					sendMeasurementsToSerial(capacityRecord.Voltage, capacityRecord.Capacity_AH, 
+						capacityRecord.dischargeTime_s, capacityRecord.Current);
+				}
+
+				printTableCaption(F("***Log end***"));
+
+			}
+
 		}
 
 		unsigned long periodFromLastSerial_us = curTime_us - lastTimeSerial_us;
@@ -212,21 +259,28 @@ void printTime(unsigned long time_s, byte startXpos, byte startYpos, byte charWi
 	display.print(t);
 }
 
-// void logToEEPROMcapacity()
+
+void printTableCaption(const __FlashStringHelper *msg) {
+	Serial.print(F("Voltage\tCapacity_mAH\tTime_s\tCurrent\t"));
+	Serial.println(msg);
+}
+
+// void printTableCaption(const char * msg) {
+// 	Serial.print(F("Voltage\tCapacity_mAH\tTime_s\tCurrent\t"));
+// 	Serial.println(msg);
+// }
 
 void sendMeasurementsToSerial(float Voltage, float Capacity_AH, unsigned long dischargeTime_s, float Current) {
-	Serial.print(F("Voltage\t"));
 	Serial.print(Voltage); 
+	Serial.print(F("\t"));
 
-	Serial.print(F("\tCapacity_mAH\t"));
 	Serial.print(Capacity_AH * 1000); 
+	Serial.print(F("\t"));
 
-	Serial.print(F("\tTime_s\t"));
 	Serial.print(dischargeTime_s); 
+	Serial.print(F("\t"));
 
-	Serial.print(F("\tCurrent\t"));
 	Serial.println(Current, 3); 
-
 }
 
 
