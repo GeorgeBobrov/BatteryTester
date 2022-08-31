@@ -3,6 +3,8 @@
 #include <GyverEncoder.h>
 #include <U8g2lib.h>
 #include <Wire.h>
+
+#include "uptime2.h"
 #include <GyverPower.h>
 
 
@@ -32,6 +34,10 @@ void setup() {
 	//set board_build.f_cpu = 8000000L in platformio.ini and 
 	//divide real freq by 2 (for working on low voltages)
 	power.setSystemPrescaler(PRESCALER_2);
+
+	uptime2Init();    // запуск миллиса на 2 таймере
+	// power.setSleepMode(EXTSTANDBY_SLEEP);
+
 	// Buzzer connected to LED_BUILTIN
 	pinMode(LED_BUILTIN, OUTPUT);
 	pinMode(pinDischarge, OUTPUT);
@@ -63,7 +69,9 @@ void setup() {
 unsigned long lastTimeMeasure_us = 0;
 unsigned long lastTimeSerial_us = 0;
 bool enableSendMeasurementsToSerial;
+bool enableSerial;
 bool enableDischarge;
+bool enableShowOnDisplay = true;
 
 unsigned long dischargeTime_s; 
 unsigned long sumOfSeveralPeriods_us; 
@@ -95,13 +103,39 @@ void loop() {
 
 	encoder.tick();
 
-	unsigned long curTime_us = micros();
+	unsigned long curTime_us = micros2() * 2;
 	unsigned long periodFromLastMeasure_us = curTime_us - lastTimeMeasure_us;
 	if (periodFromLastMeasure_us >= 50000) {
 		lastTimeMeasure_us = curTime_us;
 
+		enableSerial = digitalRead(12);
+		if (enableSerial) 
+			Serial.begin(500000);
+		else
+			Serial.end();
+
+
+		if (encoder.isLeft()) {
+			enableShowOnDisplay = false;
+			display.noDisplay();
+			Serial.end();
+			// pinMode(0, OUTPUT);
+			// pinMode(1, OUTPUT);
+			// digitalWrite(0, 1);
+			// digitalWrite(1, 1);
+			Wire.end();
+
+			power.setSleepMode(POWERDOWN_SLEEP);
+			power.sleep(SLEEP_FOREVER);
+		}	
+
+		if (encoder.isRight()) {
+			enableShowOnDisplay = true;
+			display.begin();
+			Serial.begin(500000);
+		}	
  
-		if (encoder.isClick()){
+		if (encoder.isClick()) {
 
 			enableDischarge = !enableDischarge;
 			digitalWrite(pinDischarge, enableDischarge);
@@ -116,7 +150,6 @@ void loop() {
 				printTableCaption(F("***Start Discharge***"));
  			} else
 				printTableCaption(F("***Stop Discharge***"));				
-
 
 		}
 
@@ -172,40 +205,41 @@ void loop() {
 		}
 
 
+		if (enableShowOnDisplay) {
+			display.clearBuffer(); 
+			display.setFont(u8g2_font_6x10_tf); 
+			constexpr byte charWidth = 6;
 
-		display.clearBuffer(); 
-		display.setFont(u8g2_font_6x10_tf); 
-		constexpr byte charWidth = 6;
+			display.setCursor(0, 10);
+			if (enableDischarge) {
+				display.print(F("Discharge")); 
 
-		display.setCursor(0, 10);
-		if (enableDischarge) {
-			display.print(F("Discharge")); 
+				display.setCursor(10*charWidth, 10);
+				display.print(F("Cur       A")); 
+				display.setCursor(14*charWidth, 10);
+				display.print(loadCurrent, 3); 		
+			}
 
-			display.setCursor(10*charWidth, 10);
-			display.print(F("Cur       A")); 
-			display.setCursor(14*charWidth, 10);
-			display.print(loadCurrent, 3); 		
+			display.setCursor(0, 25);
+			display.print(F("Voltage        V")); 
+			display.setCursor(9*charWidth, 25);
+			display.print(accumVoltage); 
+
+			display.setCursor(0, 40);
+			display.print(F("Capacity          mAh"));
+			display.setCursor(9*charWidth, 40);
+			display.print(accumCapacity_AH * 1000);
+
+			unsigned long time_s = dischargeTime_s;
+
+			display.setCursor(0, 55);
+			display.print(F("Time"));
+
+			printTime(time_s, 50, 55, charWidth);
+
+			display.sendBuffer();
+			Wire.flush();
 		}
-
-		display.setCursor(0, 25);
-		display.print(F("Voltage        V")); 
-		display.setCursor(9*charWidth, 25);
-		display.print(accumVoltage); 
-
-		display.setCursor(0, 40);
-		display.print(F("Capacity          mAh"));
-		display.setCursor(9*charWidth, 40);
-		display.print(accumCapacity_AH * 1000);
-
-		unsigned long time_s = dischargeTime_s;
-
-		display.setCursor(0, 55);
-		display.print(F("Time"));
-
-		printTime(time_s, 50, 55, charWidth);
-
-		display.sendBuffer();
-
 
 		if (Serial.available() > 0) {
 			auto str = Serial.readString();
@@ -244,7 +278,9 @@ void loop() {
 			sendMeasurementsToSerial(accumVoltage, accumCapacity_AH, dischargeTime_s, loadCurrent);
 		}
 	}
-
+//Doesn't work because it takes too long to send a buffer to display 
+	power.setSleepMode(POWERSAVE_SLEEP);
+	power.sleep(SLEEP_64MS);
 }
 
 void printTime(unsigned long time_s, byte startXpos, byte startYpos, byte charWidth) {
@@ -261,8 +297,10 @@ void printTime(unsigned long time_s, byte startXpos, byte startYpos, byte charWi
 
 
 void printTableCaption(const __FlashStringHelper *msg) {
-	Serial.print(F("Voltage\tCapacity_mAH\tTime_s\tCurrent\t"));
-	Serial.println(msg);
+	if (enableSerial) {
+		Serial.print(F("Voltage\tCapacity_mAH\tTime_s\tCurrent\t"));
+		Serial.println(msg);
+	}
 }
 
 // void printTableCaption(const char * msg) {
@@ -271,16 +309,18 @@ void printTableCaption(const __FlashStringHelper *msg) {
 // }
 
 void sendMeasurementsToSerial(float Voltage, float Capacity_AH, unsigned long dischargeTime_s, float Current) {
-	Serial.print(Voltage); 
-	Serial.print(F("\t"));
+	if (enableSerial) {
+		Serial.print(Voltage); 
+		Serial.print(F("\t"));
 
-	Serial.print(Capacity_AH * 1000); 
-	Serial.print(F("\t"));
+		Serial.print(Capacity_AH * 1000); 
+		Serial.print(F("\t"));
 
-	Serial.print(dischargeTime_s); 
-	Serial.print(F("\t"));
+		Serial.print(dischargeTime_s); 
+		Serial.print(F("\t"));
 
-	Serial.println(Current, 3); 
+		Serial.println(Current, 3); 
+	}
 }
 
 
