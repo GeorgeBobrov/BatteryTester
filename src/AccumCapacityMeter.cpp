@@ -4,20 +4,22 @@
 #include <U8g2lib.h>
 #include <Wire.h>
 
-#include "uptime2.h"
 #include <GyverPower.h>
 
 
-constexpr byte pinEncButton = A1;
+constexpr byte pinEncButton = 6;
 constexpr byte pinEnc1 = 3;
 constexpr byte pinEnc2 = 2;
-constexpr byte pinAnVoltage = A7;
-constexpr byte pinDischarge = 4;
+constexpr byte pinEnableDischarge = 4;
+constexpr byte pinPwmSetCurrent = 9;
+constexpr byte pinMeasureVoltage = A7;
+constexpr byte pinMeasureCurrent = A1;
 
-constexpr float loadResistor = 30.2;
-// Resistor divider and internal reference voltage 
-constexpr float voltageKoef = ((20100.0 + 5080.0) / 5080.0) * 1.08;
+constexpr float internalReferenceVoltage = 1.1;
+// Resistor divider for measure accum voltage
+constexpr float resistorDividerKoef = (80500.0 + 20100.0) / 20100.0;
 
+constexpr float currentShuntResistance = 1.02;
 
 Encoder encoder(pinEnc1, pinEnc2, pinEncButton); 
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C display(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
@@ -32,19 +34,24 @@ void isrDT() {
 
 void setup() {
 	//set board_build.f_cpu = 8000000L in platformio.ini and 
-	//divide real freq by 2 (for working on low voltages)
+	//divide real freq 16000000 by 2 by SystemPrescaler (for working on low voltages)
 	power.setSystemPrescaler(PRESCALER_2);
 
-	uptime2Init();    // запуск миллиса на 2 таймере
-	// power.setSleepMode(EXTSTANDBY_SLEEP);
+	//set Timer1 frequency to 31372 (set timer prescaler 1)
+	TCCR1A = (TCCR1A & 0xF8) | 1;
 
 	// Buzzer connected to LED_BUILTIN
 	pinMode(LED_BUILTIN, OUTPUT);
-	pinMode(pinDischarge, OUTPUT);
+	pinMode(pinEnableDischarge, OUTPUT);
+	pinMode(pinPwmSetCurrent, OUTPUT);
 //	pinMode(pinEncButton, INPUT_PULLUP);
 
-	for (byte i = 5; i <= 12; i++)
-		pinMode(i, INPUT_PULLUP);
+	pinMode(5, INPUT_PULLUP);
+	pinMode(7, INPUT_PULLUP);
+	pinMode(8, INPUT_PULLUP);
+	pinMode(10, INPUT_PULLUP);
+	pinMode(11, INPUT_PULLUP);
+	pinMode(12, INPUT_PULLUP);
 
 	pinMode(A0, INPUT_PULLUP);
 	pinMode(A2, INPUT_PULLUP);
@@ -72,14 +79,16 @@ bool enableSendMeasurementsToSerial;
 bool enableSerial;
 bool enableDischarge;
 bool enableShowOnDisplay = true;
+byte prevPwmValueForCurrent;
 
 unsigned long dischargeTime_s; 
 unsigned long sumOfSeveralPeriods_us; 
 float accumCapacity_AH;
 float threshholdVoltage; //Log capacity when reaching threshhold voltage
 constexpr float threshholdDischargeVoltage = 3.0;
+float settedDischargeCurrent = 0.1;
 
-constexpr float us_in_hour = 60.0 * 60.0 * 1000.0 * 1000.0;
+constexpr unsigned long us_in_hour = 60UL * 60 * 1000 * 1000;
 void printTime(unsigned long time_s, byte startXpos, byte startYpos, byte charWidth);
 void sendMeasurementsToSerial(float Voltage, float Capacity_AH, unsigned long dischargeTime_s, float Current);
 // void printTableCaption(const char * msg);
@@ -103,7 +112,7 @@ void loop() {
 
 	encoder.tick();
 
-	unsigned long curTime_us = micros2() * 2;
+	unsigned long curTime_us = micros();
 	unsigned long periodFromLastMeasure_us = curTime_us - lastTimeMeasure_us;
 	if (periodFromLastMeasure_us >= 50000) {
 		lastTimeMeasure_us = curTime_us;
@@ -119,11 +128,11 @@ void loop() {
 			enableShowOnDisplay = false;
 			display.noDisplay();
 			Serial.end();
-			// pinMode(0, OUTPUT);
-			// pinMode(1, OUTPUT);
-			// digitalWrite(0, 1);
-			// digitalWrite(1, 1);
 			Wire.end();
+			// pinMode(0, OUTPUT); // RX pin
+			// pinMode(1, OUTPUT); // TX pin
+			digitalWrite(0, 0); // Write 0 to reduce power consumption (Arduino nano schematic was modified)
+			digitalWrite(1, 0);
 
 			power.setSleepMode(POWERDOWN_SLEEP);
 			power.sleep(SLEEP_FOREVER);
@@ -138,7 +147,8 @@ void loop() {
 		if (encoder.isClick()) {
 
 			enableDischarge = !enableDischarge;
-			digitalWrite(pinDischarge, enableDischarge);
+			digitalWrite(pinPwmSetCurrent, 0);
+			digitalWrite(pinEnableDischarge, enableDischarge);
 
 			if (enableDischarge) {
 				dischargeTime_s = 0;
@@ -158,11 +168,18 @@ void loop() {
 		constexpr byte averCount = 5;
 		int voltSum = 0;
 		for (byte i = 0; i < averCount; i++)
-			voltSum += analogRead(pinAnVoltage);
+			voltSum += analogRead(pinMeasureVoltage);
 		float accumVoltageD = float(voltSum) / averCount;
-		  
-		float accumVoltage = (accumVoltageD / 1024.0) * voltageKoef;
-		float loadCurrent = enableDischarge ? (accumVoltage / loadResistor) : 0;
+
+		float accumVoltage = (accumVoltageD / 1024.0) * resistorDividerKoef * internalReferenceVoltage;
+		//Internal reference voltage in fact depends on supply voltage (this was measured and dependency identified)
+		float referenceVoltageCorrected = internalReferenceVoltage - 0.006 * accumVoltage;
+		accumVoltage = (accumVoltageD / 1024.0) * resistorDividerKoef * referenceVoltageCorrected;
+
+		float shuntVoltage = (analogRead(pinMeasureCurrent) / 1024.0) * referenceVoltageCorrected;
+		float accumCurrent = shuntVoltage / currentShuntResistance;
+		// Add 10 mA due to microcontroller and display consumption
+		float loadCurrent = enableDischarge ? (accumCurrent + 0.01) : 0;
 
 		if (enableDischarge) {
 			float accumCapacityPerPeriod_AH = loadCurrent * periodFromLastMeasure_us / us_in_hour;
@@ -172,6 +189,15 @@ void loop() {
 			if (sumOfSeveralPeriods_us > 1000000) {
 				dischargeTime_s += sumOfSeveralPeriods_us / 1000000;
 				sumOfSeveralPeriods_us %= 1000000;
+			}
+			// Setting discharg current via PWM
+			// Subtract the voltage drop on the Schottky diode
+			float microcontrollerVoltage = accumVoltage - 0.25;
+			float pursuitShuntVoltage = settedDischargeCurrent * currentShuntResistance;
+			byte pwmValueForCurrent = (pursuitShuntVoltage / microcontrollerVoltage) * 255;
+			if (pwmValueForCurrent > prevPwmValueForCurrent) {
+				analogWrite(pinPwmSetCurrent, pwmValueForCurrent);
+				prevPwmValueForCurrent = pwmValueForCurrent;
 			}
 		}
 
@@ -198,7 +224,7 @@ void loop() {
 
 		if ((accumVoltage <= threshholdDischargeVoltage) && enableDischarge) { // stopDischarge
 			enableDischarge = false;
-			digitalWrite(pinDischarge, enableDischarge);
+			digitalWrite(pinEnableDischarge, enableDischarge);
 			printTableCaption(F("***End Discharge***"));				
 
 			tone(LED_BUILTIN, 1, 2000);
@@ -270,6 +296,14 @@ void loop() {
 
 			}
 
+			if (str.startsWith(F("set current"))) {
+				str.remove(0, 11);
+				str.trim();
+				settedDischargeCurrent = str.toFloat();
+				if (settedDischargeCurrent == 0.0)
+					settedDischargeCurrent = 0.1;
+			}
+
 		}
 
 		unsigned long periodFromLastSerial_us = curTime_us - lastTimeSerial_us;
@@ -278,9 +312,7 @@ void loop() {
 			sendMeasurementsToSerial(accumVoltage, accumCapacity_AH, dischargeTime_s, loadCurrent);
 		}
 	}
-//Doesn't work because it takes too long to send a buffer to display 
-	power.setSleepMode(POWERSAVE_SLEEP);
-	power.sleep(SLEEP_64MS);
+
 }
 
 void printTime(unsigned long time_s, byte startXpos, byte startYpos, byte charWidth) {
