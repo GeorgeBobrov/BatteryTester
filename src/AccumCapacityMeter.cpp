@@ -1,7 +1,7 @@
 #include "wiring_private.h"
 #include <EEPROM.h>
 #include <GyverEncoder.h>
-// #include <U8g2lib.h>
+#include <U8g2lib.h>
 #include <Wire.h>
 
 #include <GyverPower.h>
@@ -22,7 +22,7 @@ constexpr float resistorDividerKoef = (80500.0 + 20100.0) / 20100.0;
 constexpr float currentShuntResistance = 1.02;
 
 Encoder encoder(pinEnc1, pinEnc2, pinEncButton); 
-// U8G2_SSD1306_128X64_NONAME_F_HW_I2C display(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+U8G2_SSD1306_128X64_NONAME_2_HW_I2C display(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 
 void isrCLK() {
 	encoder.tick();
@@ -38,7 +38,7 @@ void setup() {
 	power.setSystemPrescaler(PRESCALER_2);
 
 	//set Timer1 frequency to 31372 (set timer prescaler 1)
-	TCCR1A = (TCCR1A & 0xF8) | 1;
+	TCCR1B = (TCCR1B & 0xF8) | 1;
 
 	// Buzzer connected to LED_BUILTIN
 	pinMode(LED_BUILTIN, OUTPUT);
@@ -66,7 +66,7 @@ void setup() {
 
 	// mode = EEPROM.read(0);
 
-	// display.begin();
+	display.begin();
 
 
 	attachInterrupt(0, isrCLK, CHANGE);
@@ -126,7 +126,7 @@ void loop() {
 
 		if (encoder.isLeft()) {
 			enableShowOnDisplay = false;
-			// display.noDisplay();
+			display.noDisplay();
 			Serial.end();
 			Wire.end();
 			// pinMode(0, OUTPUT); // RX pin
@@ -140,15 +140,14 @@ void loop() {
 
 		if (encoder.isRight()) {
 			enableShowOnDisplay = true;
-			// display.begin();
+			display.begin();
 			Serial.begin(500000);
 		}	
  
 		if (encoder.isClick()) {
 
 			enableDischarge = !enableDischarge;
-			// Signal from this pin inverted in schematic, thus need write 1 to off
-			digitalWrite(pinPwmSetCurrent, 1);
+			digitalWrite(pinPwmSetCurrent, 0);
 			digitalWrite(pinEnableDischarge, enableDischarge);
 
 			if (enableDischarge) {
@@ -248,41 +247,45 @@ void loop() {
 		}
 
 
-		// if (enableShowOnDisplay) {
-		// 	display.clearBuffer(); 
-		// 	display.setFont(u8g2_font_6x10_tf); 
-		// 	constexpr byte charWidth = 6;
+		if (enableShowOnDisplay) {
+			display.firstPage();
+			do {
+				display.clearBuffer(); 
+				display.setFont(u8g2_font_6x10_tf); 
+				constexpr byte charWidth = 6;
 
-		// 	display.setCursor(0, 10);
-		// 	if (enableDischarge) {
-		// 		display.print(F("Discharge")); 
+				display.setCursor(0, 10);
+				if (enableDischarge) {
+					display.print(F("Discharge")); 
 
-		// 		display.setCursor(10*charWidth, 10);
-		// 		display.print(F("Cur       A")); 
-		// 		display.setCursor(14*charWidth, 10);
-		// 		display.print(loadCurrent, 3); 		
-		// 	}
+					display.setCursor(10*charWidth, 10);
+					display.print(F("Cur       A")); 
+					display.setCursor(14*charWidth, 10);
+					display.print(loadCurrent, 3); 		
+				}
 
-		// 	display.setCursor(0, 25);
-		// 	display.print(F("Voltage        V")); 
-		// 	display.setCursor(9*charWidth, 25);
-		// 	display.print(accumVoltage); 
+				display.setCursor(0, 25);
+				display.print(F("Voltage        V")); 
+				display.setCursor(9*charWidth, 25);
+				display.print(accumVoltage); 
 
-		// 	display.setCursor(0, 40);
-		// 	display.print(F("Capacity          mAh"));
-		// 	display.setCursor(9*charWidth, 40);
-		// 	display.print(accumCapacity_AH * 1000);
+				display.setCursor(0, 40);
+				display.print(F("Capacity          mAh"));
+				display.setCursor(9*charWidth, 40);
+				display.print(accumCapacity_AH * 1000);
 
-		// 	unsigned long time_s = dischargeTime_s;
+				unsigned long time_s = dischargeTime_s;
 
-		// 	display.setCursor(0, 55);
-		// 	display.print(F("Time"));
+				display.setCursor(0, 55);
+				display.print(F("Time"));
 
-		// 	printTime(time_s, 50, 55, charWidth);
+				printTime(time_s, 50, 55, charWidth);
 
-		// 	display.sendBuffer();
-		// 	Wire.flush();
-		// }
+				display.sendBuffer();
+			} while ( display.nextPage() );
+
+			Wire.flush();
+		}
 
 		if (Serial.available() > 0) {
 			auto str = Serial.readString();
@@ -340,8 +343,8 @@ void printTime(unsigned long time_s, byte startXpos, byte startYpos, byte charWi
 
 	char t[15];
 	sprintf_P(t, PSTR("%3dh %02dm %02ds"), hour, min, sec);
-	// display.setCursor(startXpos, startYpos);
-	// display.print(t);
+	display.setCursor(startXpos, startYpos);
+	display.print(t);
 }
 
 
