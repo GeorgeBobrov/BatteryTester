@@ -14,6 +14,7 @@ constexpr byte pinEnableDischarge = 4;
 constexpr byte pinPwmSetCurrent = 9;
 constexpr byte pinMeasureVoltage = A7;
 constexpr byte pinMeasureCurrent = A1;
+constexpr byte pinUsbConnected = 12;
 
 constexpr float internalReferenceVoltage = 1.1;
 // Resistor divider for measure accum voltage
@@ -51,7 +52,7 @@ void setup() {
 	pinMode(8, INPUT_PULLUP);
 	pinMode(10, INPUT_PULLUP);
 	pinMode(11, INPUT_PULLUP);
-	pinMode(12, INPUT_PULLUP);
+	pinMode(pinUsbConnected, INPUT);
 
 	pinMode(A0, INPUT_PULLUP);
 	pinMode(A2, INPUT_PULLUP);
@@ -76,7 +77,9 @@ void setup() {
 unsigned long lastTimeMeasure_us = 0;
 unsigned long lastTimeSerial_us = 0;
 bool enableSendMeasurementsToSerial;
-bool enableSerial;
+bool usbConnected;
+bool prevUsbConnected;
+
 bool enableDischarge;
 bool enableShowOnDisplay = true;
 byte prevPwmValueForCurrent;
@@ -107,8 +110,64 @@ struct AccumCapacityRecord
 constexpr byte recordsInEEPROM = (EEPROM.length() / sizeof(AccumCapacityRecord)) - 1;
 constexpr byte offssetOfRecords = 4;
 
+enum class DisplayMode {
+	main,
+	setCurrent,
+	off
+};
+
+enum SelectedActionOnMain {
+	startDischarge,
+	setCurrent,
+	off
+};
+
+DisplayMode displayMode;
+SelectedActionOnMain selectedActionOnMain;
+
+void powerdownSleep() {
+	displayMode = DisplayMode::off;
+	display.noDisplay();
+	Serial.end();
+	Wire.end();
+	// pinMode(0, OUTPUT); // RX pin
+	// pinMode(1, OUTPUT); // TX pin
+	digitalWrite(0, 0); // Write 0 to reduce power consumption (Arduino nano schematic was modified)
+	digitalWrite(1, 0);
+
+	power.setSleepMode(POWERDOWN_SLEEP);
+	power.sleep(SLEEP_FOREVER);
+}
+
+void restoreAfterSleep() {
+	displayMode = DisplayMode::main;
+	display.begin();
+	if (usbConnected)
+		Serial.begin(500000);
+}
+
+void startStopDischarge(bool l_enableDischarge) {
+	enableDischarge = l_enableDischarge;
+	digitalWrite(pinPwmSetCurrent, 0);
+	digitalWrite(pinEnableDischarge, enableDischarge);
+
+	if (enableDischarge) {
+		dischargeTime_s = 0;
+		accumCapacity_AH = 0;
+		// tone(LED_BUILTIN, 2000, 500);
+		// tone(LED_BUILTIN, 2, 2000);
+
+		threshholdVoltage = 4.5;
+		prevPwmValueForCurrent = 0;
+
+		printTableCaption(F("***Start Discharge***"));
+	} else
+		printTableCaption(F("***Stop Discharge***"));				
+}
 
 void loop() {
+	// Serial.print(micros()); 
+	// Serial.println(F(" Start Loop"));
 
 	encoder.tick();
 
@@ -117,71 +176,108 @@ void loop() {
 	if (periodFromLastMeasure_us >= 50000) {
 		lastTimeMeasure_us = curTime_us;
 
-		enableSerial = digitalRead(12);
-		if (enableSerial) 
-			Serial.begin(500000);
-		else
-			Serial.end();
+		usbConnected = digitalRead(pinUsbConnected);
+		if (usbConnected != prevUsbConnected) {
+			if (usbConnected) 
+				Serial.begin(500000);
+			else
+				Serial.end();
 
+			digitalWrite(LED_BUILTIN, usbConnected);
+			prevUsbConnected = usbConnected;
+		}
 
 		if (encoder.isLeft()) {
-			enableShowOnDisplay = false;
-			display.noDisplay();
-			Serial.end();
-			Wire.end();
-			// pinMode(0, OUTPUT); // RX pin
-			// pinMode(1, OUTPUT); // TX pin
-			digitalWrite(0, 0); // Write 0 to reduce power consumption (Arduino nano schematic was modified)
-			digitalWrite(1, 0);
+			switch (displayMode) {
+				case DisplayMode::main:
+					selectedActionOnMain = SelectedActionOnMain( byte(selectedActionOnMain) + 1);
+					if (selectedActionOnMain > SelectedActionOnMain::off) selectedActionOnMain = 0;
+					break;
+					
+				case DisplayMode::setCurrent:
+					settedDischargeCurrent += 0.05;
+					prevPwmValueForCurrent = 0;
+					break;
 
-			power.setSleepMode(POWERDOWN_SLEEP);
-			power.sleep(SLEEP_FOREVER);
+				case DisplayMode::off:	
+					restoreAfterSleep();
+					break;
+			} 
 		}	
 
 		if (encoder.isRight()) {
-			enableShowOnDisplay = true;
-			display.begin();
-			Serial.begin(500000);
+			switch (displayMode) {
+				case DisplayMode::main:
+					selectedActionOnMain = SelectedActionOnMain( byte(selectedActionOnMain) - 1);
+					if (selectedActionOnMain < 0) selectedActionOnMain = SelectedActionOnMain::off;
+					break;
+
+				case DisplayMode::setCurrent:
+					settedDischargeCurrent -= 0.05; 
+					prevPwmValueForCurrent = 0;
+					break;
+
+				case DisplayMode::off:	
+					restoreAfterSleep();
+					break;
+			} 
 		}	
  
 		if (encoder.isClick()) {
+			switch (displayMode) {
+				case DisplayMode::main:
+					switch (selectedActionOnMain) {
+						case startDischarge:
+							startStopDischarge(!enableDischarge);
+							break;
+						case setCurrent:
+							displayMode = DisplayMode::setCurrent;
+							break;
+						case off:
+							powerdownSleep();
+							break;
+					}
+					break;
 
-			enableDischarge = !enableDischarge;
-			digitalWrite(pinPwmSetCurrent, 0);
-			digitalWrite(pinEnableDischarge, enableDischarge);
-
-			if (enableDischarge) {
-				dischargeTime_s = 0;
-				accumCapacity_AH = 0;
-				// tone(LED_BUILTIN, 2000, 500);
-				tone(LED_BUILTIN, 2, 2000);
-
-				threshholdVoltage = 4.5;
-				printTableCaption(F("***Start Discharge***"));
- 			} else
-				printTableCaption(F("***Stop Discharge***"));				
-
+				case DisplayMode::setCurrent:
+					displayMode = DisplayMode::main;
+					break;
+			} 
 		}
 
 
-		// int accumVoltageD = analogRead(pinAnVoltage);
+		// int accumVoltageADC = analogRead(pinAnVoltage);
+		// Averaging a number of measurements for more stable readings
 		constexpr byte averCount = 5;
-		int voltSum = 0;
-		for (byte i = 0; i < averCount; i++)
-			voltSum += analogRead(pinMeasureVoltage);
-		float accumVoltageD = float(voltSum) / averCount;
+		int voltAdcSum = 0;
+		int curAdcSum = 0;
+		for (byte i = 0; i < averCount; i++) {
+			voltAdcSum += analogRead(pinMeasureVoltage);
+			curAdcSum += analogRead(pinMeasureCurrent);
+		}
+		float accumVoltageADC = float(voltAdcSum) / averCount;
 
-		float accumVoltage = (accumVoltageD / 1024.0) * resistorDividerKoef * internalReferenceVoltage;
+		float accumVoltage = (accumVoltageADC / 1024.0) * resistorDividerKoef * internalReferenceVoltage;
 		//Internal reference voltage in fact depends on supply voltage (this was measured and dependency identified)
 		float referenceVoltageCorrected = internalReferenceVoltage - 0.006 * accumVoltage;
-		accumVoltage = (accumVoltageD / 1024.0) * resistorDividerKoef * referenceVoltageCorrected;
+		accumVoltage = (accumVoltageADC / 1024.0) * resistorDividerKoef * referenceVoltageCorrected;
 
-		float shuntVoltage = (analogRead(pinMeasureCurrent) / 1024.0) * referenceVoltageCorrected;
+		float shuntVoltageADC = float(curAdcSum) / averCount;
+		float shuntVoltage = (shuntVoltageADC / 1024.0) * referenceVoltageCorrected;
 		float accumCurrent = shuntVoltage / currentShuntResistance;
-		// Add 10 mA due to microcontroller and display consumption
-		float loadCurrent = enableDischarge ? (accumCurrent + 0.01) : 0;
+		float loadCurrent = 0;
 
 		if (enableDischarge) {
+			// Subtract the voltage drop on the Schottky diode
+			float microcontrollerVoltage = accumVoltage - 0.25;
+			if (usbConnected) microcontrollerVoltage = 5.0 - 0.25;
+			// Microcontroller and display consumption (was measured)
+			float microcontrollerCurrent = 0.003 * microcontrollerVoltage;
+			if (usbConnected)
+				loadCurrent = accumCurrent;
+			else
+				loadCurrent = accumCurrent + microcontrollerCurrent;
+
 			float accumCapacityPerPeriod_AH = loadCurrent * periodFromLastMeasure_us / us_in_hour;
 			accumCapacity_AH += accumCapacityPerPeriod_AH;
 			sumOfSeveralPeriods_us += periodFromLastMeasure_us;
@@ -190,29 +286,30 @@ void loop() {
 				dischargeTime_s += sumOfSeveralPeriods_us / 1000000;
 				sumOfSeveralPeriods_us %= 1000000;
 			}
+
 			// Setting discharg current via PWM
 			float pursuitShuntVoltage = settedDischargeCurrent * currentShuntResistance;
-			word pwmValueForCurrent = (pursuitShuntVoltage / referenceVoltageCorrected) * 255;
+			word pwmValueForCurrent = (pursuitShuntVoltage / microcontrollerVoltage) * 255;
 			pwmValueForCurrent = min(pwmValueForCurrent, 255);
-			if (pwmValueForCurrent > prevPwmValueForCurrent) {
-				if (enableSerial) {
-					Serial.print(F("pursuitShuntVoltage "));
-					Serial.println(pursuitShuntVoltage, 3); 
+			if ((pwmValueForCurrent > prevPwmValueForCurrent) ||
+				(pwmValueForCurrent == 0) ||
+				(pwmValueForCurrent < prevPwmValueForCurrent * 0.85)) {
+				// if (usbConnected) {
+				// 	Serial.print(F("pursuitShuntVoltage "));
+				// 	Serial.println(pursuitShuntVoltage, 3); 
 
-					Serial.print(F("referenceVoltageCorrected "));
-					Serial.println(referenceVoltageCorrected, 3); 
+				// 	Serial.print(F("referenceVoltageCorrected "));
+				// 	Serial.println(referenceVoltageCorrected, 3); 
 
-					Serial.print(F("settedDischargeCurrent "));
-					Serial.println(settedDischargeCurrent, 3); 
+				// 	Serial.print(F("settedDischargeCurrent "));
+				// 	Serial.println(settedDischargeCurrent, 3); 
 
-					Serial.print(F("pwmValueForCurrent "));
-					Serial.println(pwmValueForCurrent); 
+				// 	Serial.print(F("pwmValueForCurrent "));
+				// 	Serial.println(pwmValueForCurrent); 
 
-				}
+				// }
 
-
-				// Signal from this pin inverted in schematic, thus need invert by (255 - value)
-				analogWrite(pinPwmSetCurrent, 255 - pwmValueForCurrent);
+				analogWrite(pinPwmSetCurrent, pwmValueForCurrent);
 				prevPwmValueForCurrent = pwmValueForCurrent;
 			}
 		}
@@ -239,52 +336,110 @@ void loop() {
 
 
 		if ((accumVoltage <= threshholdDischargeVoltage) && enableDischarge) { // stopDischarge
-			enableDischarge = false;
-			digitalWrite(pinEnableDischarge, enableDischarge);
-			printTableCaption(F("***End Discharge***"));				
+			startStopDischarge(false);
 
-			tone(LED_BUILTIN, 1, 2000);
+			Serial.flush();
+			powerdownSleep();				
+
+			// tone(LED_BUILTIN, 1, 2000);
 		}
 
 
-		if (enableShowOnDisplay) {
+		if (displayMode != DisplayMode::off) {
 			display.firstPage();
+			// Serial.print(micros()); 
+			// Serial.println(F(" Before Display Loop"));
+			byte pageNum = 0;
 			do {
-				display.clearBuffer(); 
+				// Serial.print(micros()); 
+				// Serial.println(F(" Before Display Paint"));
+
 				display.setFont(u8g2_font_6x10_tf); 
 				constexpr byte charWidth = 6;
+				constexpr byte charHeight = 10;
+				byte y = 10;
 
-				display.setCursor(0, 10);
+				switch (displayMode) {
+
+					case DisplayMode::main:
+						// Draw button
+						display.setCursor(2, y);
+						switch (selectedActionOnMain) {
+							case startDischarge:
+								if (enableDischarge)
+									display.print(F("Stop Discharge"));
+								else	 
+									display.print(F("Start Discharge"));
+								break;
+
+							case setCurrent:
+								display.print(F("Set Discharge Current")); break; 
+							case off:
+								display.print(F("Off")); break; 
+						}	
+						display.drawFrame(0, y-9, 127, 13);
+						break; 
+
+					case DisplayMode::setCurrent:
+						display.setCursor(0, y);
+
+						display.print(F("Current       A")); 
+
+						display.setCursor(8*charWidth, y);
+						display.print(settedDischargeCurrent, 3); 
+
+						byte x = 127 - 3*charWidth - 2;
+						display.setCursor(x, y);
+						display.print(F("Set")); 
+
+						display.drawFrame(x - 2, y-9, 3*charWidth + 4, 13);
+						break;
+				}
+
+				// Offset of top yellow part of display (and minus baseline offset of font)
+				y = 16 + charHeight - 3;
+				display.setCursor(0, y);
 				if (enableDischarge) {
 					display.print(F("Discharge")); 
 
-					display.setCursor(10*charWidth, 10);
+					display.setCursor(10*charWidth, y);
 					display.print(F("Cur       A")); 
-					display.setCursor(14*charWidth, 10);
+					display.setCursor(14*charWidth, y);
 					display.print(loadCurrent, 3); 		
 				}
 
-				display.setCursor(0, 25);
+				
+				y += (charHeight + 2);
+				display.setCursor(0, y);
 				display.print(F("Voltage        V")); 
-				display.setCursor(9*charWidth, 25);
+				display.setCursor(9*charWidth, y);
 				display.print(accumVoltage); 
 
-				display.setCursor(0, 40);
+				if (selectedActionOnMain == setCurrent) {
+					display.setCursor(127 - 3*charWidth, y);
+					display.print(prevPwmValueForCurrent); 	
+				}			
+
+				y += (charHeight + 2);
+				display.setCursor(0, y);
 				display.print(F("Capacity          mAh"));
-				display.setCursor(9*charWidth, 40);
+				display.setCursor(9*charWidth, y);
 				display.print(accumCapacity_AH * 1000);
 
 				unsigned long time_s = dischargeTime_s;
 
-				display.setCursor(0, 55);
+				y += (charHeight + 2);
+				display.setCursor(0, y);
 				display.print(F("Time"));
 
-				printTime(time_s, 50, 55, charWidth);
+				printTime(time_s, 50, y, charWidth);
 
-				display.sendBuffer();
+				encoder.tick();
+				// Serial.print(micros()); 
+				// Serial.println(F(" Before Display nextPage"));
+				pageNum++;
 			} while ( display.nextPage() );
 
-			Wire.flush();
 		}
 
 		if (Serial.available() > 0) {
@@ -331,6 +486,10 @@ void loop() {
 			lastTimeSerial_us = curTime_us;
 			sendMeasurementsToSerial(accumVoltage, accumCapacity_AH, dischargeTime_s, loadCurrent);
 		}
+
+		// Serial.print(micros()); 
+		// Serial.println(F(" End Loop"));
+
 	}
 
 }
@@ -349,7 +508,7 @@ void printTime(unsigned long time_s, byte startXpos, byte startYpos, byte charWi
 
 
 void printTableCaption(const __FlashStringHelper *msg) {
-	if (enableSerial) {
+	if (usbConnected) {
 		Serial.print(F("Voltage\tCapacity_mAH\tTime_s\tCurrent\t"));
 		Serial.println(msg);
 	}
@@ -361,7 +520,7 @@ void printTableCaption(const __FlashStringHelper *msg) {
 // }
 
 void sendMeasurementsToSerial(float Voltage, float Capacity_AH, unsigned long dischargeTime_s, float Current) {
-	if (enableSerial) {
+	if (usbConnected) {
 		Serial.print(Voltage); 
 		Serial.print(F("\t"));
 
