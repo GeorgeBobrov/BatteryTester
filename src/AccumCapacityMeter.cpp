@@ -187,45 +187,17 @@ void loop() {
 			prevUsbConnected = usbConnected;
 		}
 
-		if (encoder.isLeft()) {
-			switch (displayMode) {
-				case DisplayMode::main:
+		switch (displayMode) {
+			case DisplayMode::main:
+				if (encoder.isLeft()) {
 					selectedActionOnMain = SelectedActionOnMain( byte(selectedActionOnMain) + 1);
 					if (selectedActionOnMain > SelectedActionOnMain::off) selectedActionOnMain = 0;
-					break;
-					
-				case DisplayMode::setCurrent:
-					settedDischargeCurrent += 0.05;
-					prevPwmValueForCurrent = 0;
-					break;
-
-				case DisplayMode::off:	
-					restoreAfterSleep();
-					break;
-			} 
-		}	
-
-		if (encoder.isRight()) {
-			switch (displayMode) {
-				case DisplayMode::main:
+				}
+				if (encoder.isRight()) {
 					selectedActionOnMain = SelectedActionOnMain( byte(selectedActionOnMain) - 1);
 					if (selectedActionOnMain < 0) selectedActionOnMain = SelectedActionOnMain::off;
-					break;
-
-				case DisplayMode::setCurrent:
-					settedDischargeCurrent -= 0.05; 
-					prevPwmValueForCurrent = 0;
-					break;
-
-				case DisplayMode::off:	
-					restoreAfterSleep();
-					break;
-			} 
-		}	
- 
-		if (encoder.isClick()) {
-			switch (displayMode) {
-				case DisplayMode::main:
+				}
+				if (encoder.isClick()) {
 					switch (selectedActionOnMain) {
 						case startDischarge:
 							startStopDischarge(!enableDischarge);
@@ -237,13 +209,29 @@ void loop() {
 							powerdownSleep();
 							break;
 					}
-					break;
-
-				case DisplayMode::setCurrent:
+				}
+			break;
+				
+			case DisplayMode::setCurrent:
+				if (encoder.isLeft()) {
+					settedDischargeCurrent += 0.05;
+					prevPwmValueForCurrent = 0;
+				}
+				if (encoder.isRight()) {
+					settedDischargeCurrent -= 0.05; 
+					prevPwmValueForCurrent = 0;
+				}
+				if (encoder.isClick())
 					displayMode = DisplayMode::main;
-					break;
-			} 
-		}
+			break;
+
+			case DisplayMode::off:	
+				if (encoder.isLeft())
+					restoreAfterSleep();
+				if (encoder.isRight())
+					restoreAfterSleep();
+			break;
+		} 
 
 
 		// int accumVoltageADC = analogRead(pinAnVoltage);
@@ -378,7 +366,7 @@ void loop() {
 								display.print(F("Off")); break; 
 						}	
 						display.drawFrame(0, y-9, 127, 13);
-						break; 
+					break;
 
 					case DisplayMode::setCurrent:
 						display.setCursor(0, y);
@@ -393,7 +381,7 @@ void loop() {
 						display.print(F("Set")); 
 
 						display.drawFrame(x - 2, y-9, 3*charWidth + 4, 13);
-						break;
+					break;
 				}
 
 				// Offset of top yellow part of display (and minus baseline offset of font)
@@ -410,14 +398,20 @@ void loop() {
 
 				
 				y += (charHeight + 2);
-				display.setCursor(0, y);
-				display.print(F("Voltage        V")); 
-				display.setCursor(9*charWidth, y);
-				display.print(accumVoltage); 
 
 				if (selectedActionOnMain == setCurrent) {
+					display.setCursor(0, y);
+					display.print(F("Volt      V,  PWM")); 
+					display.setCursor(5*charWidth, y);
+					display.print(accumVoltage); 
+
 					display.setCursor(127 - 3*charWidth, y);
 					display.print(prevPwmValueForCurrent); 	
+				} else {
+					display.setCursor(0, y);
+					display.print(F("Voltage        V")); 
+					display.setCursor(9*charWidth, y);
+					display.print(accumVoltage); 
 				}			
 
 				y += (charHeight + 2);
