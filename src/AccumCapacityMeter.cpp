@@ -18,9 +18,18 @@ constexpr byte pinUsbConnected = 12;
 
 constexpr float internalReferenceVoltage = 1.1;
 // Resistor divider for measure accum voltage
-constexpr float resistorDividerKoef = (80500.0 + 20100.0) / 20100.0;
+constexpr float Rup = 80500.0;
+constexpr float Rdown = 20100.0;
+constexpr float resistorDividerKoef = (Rup + Rdown) / Rdown;
 
-constexpr float currentShuntResistance = 1.02;
+constexpr float stopDischargeVoltage = 3.0;
+constexpr float currentShuntResistance = 1.04;
+float wantedDischargeCurrent = 0.1; // Initial value 
+constexpr float maxDischargeCurrent = 1; 
+
+constexpr int16_t MAX_ADC_VALUE = bit(10) - 1;
+constexpr int16_t MAX_PWM_VALUE = bit(8) - 1;
+
 
 Encoder encoder(pinEnc1, pinEnc2, pinEncButton); 
 U8G2_SSD1306_128X64_NONAME_2_HW_I2C display(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
@@ -88,8 +97,6 @@ unsigned long dischargeTime_s;
 unsigned long sumOfSeveralPeriods_us; 
 float accumCapacity_AH;
 float threshholdVoltage; //Log capacity when reaching threshhold voltage
-constexpr float threshholdDischargeVoltage = 3.0;
-float settedDischargeCurrent = 0.1;
 
 constexpr unsigned long us_in_hour = 60UL * 60 * 1000 * 1000;
 void printTime(unsigned long time_s, byte startXpos, byte startYpos, byte charWidth);
@@ -214,11 +221,13 @@ void loop() {
 				
 			case DisplayMode::setCurrent:
 				if (encoder.isLeft()) {
-					settedDischargeCurrent += 0.05;
+					wantedDischargeCurrent += 0.05;
+					if (wantedDischargeCurrent > maxDischargeCurrent) wantedDischargeCurrent = maxDischargeCurrent;
 					prevPwmValueForCurrent = 0;
 				}
 				if (encoder.isRight()) {
-					settedDischargeCurrent -= 0.05; 
+					wantedDischargeCurrent -= 0.05; 
+					if (wantedDischargeCurrent < 0) wantedDischargeCurrent = 0;
 					prevPwmValueForCurrent = 0;
 				}
 				if (encoder.isClick())
@@ -245,26 +254,34 @@ void loop() {
 		}
 		float accumVoltageADC = float(voltAdcSum) / averCount;
 
-		float accumVoltage = (accumVoltageADC / 1024.0) * resistorDividerKoef * internalReferenceVoltage;
-		//Internal reference voltage in fact depends on supply voltage (this was measured and dependency identified)
-		float referenceVoltageCorrected = internalReferenceVoltage - 0.006 * accumVoltage;
-		accumVoltage = (accumVoltageADC / 1024.0) * resistorDividerKoef * referenceVoltageCorrected;
+		constexpr float UsbVoltage = 5.0;
+		constexpr float SchottkyVoltageDrop = 0.25;
+		float accumVoltage = (accumVoltageADC / MAX_ADC_VALUE) * resistorDividerKoef * internalReferenceVoltage;
+		float microcontrollerVoltage = accumVoltage;
+		if (usbConnected) microcontrollerVoltage = UsbVoltage;
+		// Internal reference voltage in fact depends on supply voltage (this was measured and dependency identified)
+		float referenceVoltageCorrected = internalReferenceVoltage - 0.006 * microcontrollerVoltage;
+		// Repeat calculations with corrected reference voltage value
+		accumVoltage = (accumVoltageADC / MAX_ADC_VALUE) * resistorDividerKoef * referenceVoltageCorrected;
+		microcontrollerVoltage = accumVoltage - SchottkyVoltageDrop;
+		if (usbConnected) microcontrollerVoltage = UsbVoltage - SchottkyVoltageDrop;
 
 		float shuntVoltageADC = float(curAdcSum) / averCount;
-		float shuntVoltage = (shuntVoltageADC / 1024.0) * referenceVoltageCorrected;
+		float shuntVoltage = (shuntVoltageADC / MAX_ADC_VALUE) * referenceVoltageCorrected;
 		float accumCurrent = shuntVoltage / currentShuntResistance;
-		float loadCurrent = 0;
+		float loadCurrent = accumCurrent;
 
 		if (enableDischarge) {
-			// Subtract the voltage drop on the Schottky diode
-			float microcontrollerVoltage = accumVoltage - 0.25;
-			if (usbConnected) microcontrollerVoltage = 5.0 - 0.25;
-			// Microcontroller and display consumption (was measured)
+			// Microcontroller and display consumption (this was measured and dependency identified)
 			float microcontrollerCurrent = 0.003 * microcontrollerVoltage;
-			if (usbConnected)
-				loadCurrent = accumCurrent;
-			else
-				loadCurrent = accumCurrent + microcontrollerCurrent;
+			float wantedDischargeCurrentCorrected = wantedDischargeCurrent;
+			// If USB connected, microcontroller and display consump current from USB
+			if (!usbConnected) {
+			// if powered from accumulator, we need to take microcontroller current into account	
+				loadCurrent += microcontrollerCurrent;
+				wantedDischargeCurrentCorrected -= microcontrollerCurrent;
+				if (wantedDischargeCurrentCorrected < 0) wantedDischargeCurrentCorrected = 0;
+			}
 
 			float accumCapacityPerPeriod_AH = loadCurrent * periodFromLastMeasure_us / us_in_hour;
 			accumCapacity_AH += accumCapacityPerPeriod_AH;
@@ -276,15 +293,17 @@ void loop() {
 			}
 
 			// Setting discharg current via PWM
-			float pursuitShuntVoltage = settedDischargeCurrent * currentShuntResistance;
-			word pwmValueForCurrent = (pursuitShuntVoltage / microcontrollerVoltage) * 255;
-			pwmValueForCurrent = min(pwmValueForCurrent, 255);
-			if ((pwmValueForCurrent > prevPwmValueForCurrent) ||
+			float wantedShuntVoltage = wantedDischargeCurrentCorrected * currentShuntResistance;
+			// The red LED used as a stabilitron to limit PWM amplitude voltage (see schematic)
+			constexpr float redLedVoltage = 1.61;
+			word pwmValueForCurrent = (wantedShuntVoltage / redLedVoltage) * MAX_PWM_VALUE;
+			pwmValueForCurrent = min(pwmValueForCurrent, MAX_PWM_VALUE);
+			if ((pwmValueForCurrent > prevPwmValueForCurrent * 1.15) ||
 				(pwmValueForCurrent == 0) ||
 				(pwmValueForCurrent < prevPwmValueForCurrent * 0.85)) {
 				// if (usbConnected) {
-				// 	Serial.print(F("pursuitShuntVoltage "));
-				// 	Serial.println(pursuitShuntVoltage, 3); 
+				// 	Serial.print(F("wantedShuntVoltage "));
+				// 	Serial.println(wantedShuntVoltage, 3); 
 
 				// 	Serial.print(F("referenceVoltageCorrected "));
 				// 	Serial.println(referenceVoltageCorrected, 3); 
@@ -323,7 +342,7 @@ void loop() {
 		}
 
 
-		if ((accumVoltage <= threshholdDischargeVoltage) && enableDischarge) { // stopDischarge
+		if ((accumVoltage <= stopDischargeVoltage) && enableDischarge) { // stopDischarge
 			startStopDischarge(false);
 
 			Serial.flush();
@@ -374,7 +393,7 @@ void loop() {
 						display.print(F("Current       A")); 
 
 						display.setCursor(8*charWidth, y);
-						display.print(settedDischargeCurrent, 3); 
+						display.print(wantedDischargeCurrent, 3); 
 
 						byte x = 127 - 3*charWidth - 2;
 						display.setCursor(x, y);
@@ -468,9 +487,9 @@ void loop() {
 			if (str.startsWith(F("set current"))) {
 				str.remove(0, 11);
 				str.trim();
-				settedDischargeCurrent = str.toFloat();
-				if (settedDischargeCurrent == 0.0)
-					settedDischargeCurrent = 0.1;
+				wantedDischargeCurrent = str.toFloat();
+				if (wantedDischargeCurrent < 0) wantedDischargeCurrent = 0;
+				if (wantedDischargeCurrent > maxDischargeCurrent) wantedDischargeCurrent = maxDischargeCurrent;
 			}
 
 		}
