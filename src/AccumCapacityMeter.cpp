@@ -5,7 +5,7 @@
 #include <Wire.h>
 
 #include <GyverPower.h>
-
+#include <GyverPWM.h>
 
 constexpr byte pinEncButton = 6;
 constexpr byte pinEnc1 = 3;
@@ -20,15 +20,16 @@ constexpr float internalReferenceVoltage = 1.1;
 // Resistor divider for measure accum voltage
 constexpr float Rup = 80500.0;
 constexpr float Rdown = 20100.0;
-constexpr float resistorDividerKoef = (Rup + Rdown) / Rdown;
+constexpr float resistorDividerCoef = (Rup + Rdown) / Rdown;
 
 constexpr float stopDischargeVoltage = 3.0;
-constexpr float currentShuntResistance = 1.04;
+constexpr float currentShuntResistance = 1.01;
 float wantedDischargeCurrent = 0.1; // Initial value 
 constexpr float maxDischargeCurrent = 1; 
 
 constexpr int16_t MAX_ADC_VALUE = bit(10) - 1;
-constexpr int16_t MAX_PWM_VALUE = bit(8) - 1;
+// Use GyverPWM library, 10 bit PWM (PWM_16KHZ_D9 function)
+constexpr int16_t MAX_PWM_VALUE = bit(10) - 1;
 
 
 Encoder encoder(pinEnc1, pinEnc2, pinEncButton); 
@@ -48,7 +49,7 @@ void setup() {
 	power.setSystemPrescaler(PRESCALER_2);
 
 	//set Timer1 frequency to 31372 (set timer prescaler 1)
-	TCCR1B = (TCCR1B & 0xF8) | 1;
+	// TCCR1B = (TCCR1B & 0xF8) | 1; //No need, using GyverPWM
 
 	// Buzzer connected to LED_BUILTIN
 	pinMode(LED_BUILTIN, OUTPUT);
@@ -255,16 +256,17 @@ void loop() {
 		float accumVoltageADC = float(voltAdcSum) / averCount;
 
 		constexpr float UsbVoltage = 5.0;
-		constexpr float SchottkyVoltageDrop = 0.25;
-		float accumVoltage = (accumVoltageADC / MAX_ADC_VALUE) * resistorDividerKoef * internalReferenceVoltage;
+		float accumVoltage = (accumVoltageADC / MAX_ADC_VALUE) * resistorDividerCoef * internalReferenceVoltage;
 		float microcontrollerVoltage = accumVoltage;
-		if (usbConnected) microcontrollerVoltage = UsbVoltage;
+
 		// Internal reference voltage in fact depends on supply voltage (this was measured and dependency identified)
 		float referenceVoltageCorrected = internalReferenceVoltage - 0.006 * microcontrollerVoltage;
+		if (usbConnected) referenceVoltageCorrected = 1.08;
+
 		// Repeat calculations with corrected reference voltage value
-		accumVoltage = (accumVoltageADC / MAX_ADC_VALUE) * resistorDividerKoef * referenceVoltageCorrected;
-		microcontrollerVoltage = accumVoltage - SchottkyVoltageDrop;
-		if (usbConnected) microcontrollerVoltage = UsbVoltage - SchottkyVoltageDrop;
+		accumVoltage = (accumVoltageADC / MAX_ADC_VALUE) * resistorDividerCoef * referenceVoltageCorrected;
+		microcontrollerVoltage = accumVoltage;
+		if (usbConnected) microcontrollerVoltage = UsbVoltage;
 
 		float shuntVoltageADC = float(curAdcSum) / averCount;
 		float shuntVoltage = (shuntVoltageADC / MAX_ADC_VALUE) * referenceVoltageCorrected;
@@ -296,27 +298,17 @@ void loop() {
 			float wantedShuntVoltage = wantedDischargeCurrentCorrected * currentShuntResistance;
 			// The red LED used as a stabilitron to limit PWM amplitude voltage (see schematic)
 			constexpr float redLedVoltage = 1.61;
-			word pwmValueForCurrent = (wantedShuntVoltage / redLedVoltage) * MAX_PWM_VALUE;
+			// Since the charge and discharge resistances are not equal, a correction is needed 
+			constexpr float PwmCorrectionCoef = 1.04;
+			constexpr float PwmStepInV = (redLedVoltage / MAX_PWM_VALUE) * PwmCorrectionCoef;
+			word pwmValueForCurrent = wantedShuntVoltage / PwmStepInV;
 			pwmValueForCurrent = min(pwmValueForCurrent, MAX_PWM_VALUE);
 			if ((pwmValueForCurrent > prevPwmValueForCurrent * 1.15) ||
 				(pwmValueForCurrent == 0) ||
 				(pwmValueForCurrent < prevPwmValueForCurrent * 0.85)) {
-				// if (usbConnected) {
-				// 	Serial.print(F("wantedShuntVoltage "));
-				// 	Serial.println(wantedShuntVoltage, 3); 
 
-				// 	Serial.print(F("referenceVoltageCorrected "));
-				// 	Serial.println(referenceVoltageCorrected, 3); 
-
-				// 	Serial.print(F("settedDischargeCurrent "));
-				// 	Serial.println(settedDischargeCurrent, 3); 
-
-				// 	Serial.print(F("pwmValueForCurrent "));
-				// 	Serial.println(pwmValueForCurrent); 
-
-				// }
-
-				analogWrite(pinPwmSetCurrent, pwmValueForCurrent);
+				// analogWrite(pinPwmSetCurrent, pwmValueForCurrent);
+				PWM_16KHZ_D9(pwmValueForCurrent);
 				prevPwmValueForCurrent = pwmValueForCurrent;
 			}
 		}
@@ -446,6 +438,19 @@ void loop() {
 				display.print(F("Time"));
 
 				printTime(time_s, 50, y, charWidth);
+
+				// char t[15];
+				// sprintf_P(t, PSTR("%dmV %dmA %dmA"), int(shuntVoltage * 1000), int(accumCurrent * 1000), 
+				// 	int(microcontrollerCurrent * 1000));
+				// y += (charHeight + 2);
+				// display.setCursor(0, y);
+				// display.print(t);
+				
+				// sprintf_P(t, PSTR("%dmA %dmV %dr"), int(wantedDischargeCurrentCorrected * 1000), int(wantedShuntVoltage * 1000), 
+				// 	int(PWMratio * 1000));
+				// y += (charHeight + 2);
+				// display.setCursor(0, y);
+				// display.print(t);
 
 				encoder.tick();
 				// Serial.print(micros()); 
