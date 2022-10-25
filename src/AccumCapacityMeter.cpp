@@ -13,7 +13,7 @@ constexpr byte pinEnc2 = 2;
 constexpr byte pinEnableDischarge = 4;
 constexpr byte pinPwmSetCurrent = 9;
 constexpr byte pinMeasureVoltage = A7;
-constexpr byte pinMeasureCurrent = A1;
+constexpr byte pinMeasureCurrent = A6;
 constexpr byte pinUsbConnected = 12;
 
 constexpr float internalReferenceVoltage = 1.1;
@@ -65,9 +65,9 @@ void setup() {
 	pinMode(pinUsbConnected, INPUT);
 
 	pinMode(A0, INPUT_PULLUP);
+	pinMode(A1, INPUT_PULLUP);
 	pinMode(A2, INPUT_PULLUP);
 	pinMode(A3, INPUT_PULLUP);
-	pinMode(A6, INPUT_PULLUP);
 		
 
 	analogReference(INTERNAL);
@@ -132,6 +132,7 @@ enum SelectedActionOnMain {
 
 DisplayMode displayMode;
 SelectedActionOnMain selectedActionOnMain;
+bool debugMode;
 
 void powerdownSleep() {
 	displayMode = DisplayMode::off;
@@ -242,6 +243,8 @@ void loop() {
 					restoreAfterSleep();
 			break;
 		} 
+		if ((selectedActionOnMain == setCurrent) && encoder.isHolded())
+			debugMode = !debugMode;
 
 
 		// int accumVoltageADC = analogRead(pinAnVoltage);
@@ -264,7 +267,8 @@ void loop() {
 		if (usbConnected) referenceVoltageCorrected = 1.08;
 
 		// Repeat calculations with corrected reference voltage value
-		accumVoltage = (accumVoltageADC / MAX_ADC_VALUE) * resistorDividerCoef * referenceVoltageCorrected;
+		float accumVoltageDivided = (accumVoltageADC / MAX_ADC_VALUE) * referenceVoltageCorrected;
+		accumVoltage = accumVoltageDivided * resistorDividerCoef;
 		microcontrollerVoltage = accumVoltage;
 		if (usbConnected) microcontrollerVoltage = UsbVoltage;
 
@@ -272,10 +276,11 @@ void loop() {
 		float shuntVoltage = (shuntVoltageADC / MAX_ADC_VALUE) * referenceVoltageCorrected;
 		float accumCurrent = shuntVoltage / currentShuntResistance;
 		float loadCurrent = accumCurrent;
+		float microcontrollerCurrent;
 
 		if (enableDischarge) {
 			// Microcontroller and display consumption (this was measured and dependency identified)
-			float microcontrollerCurrent = 0.003 * microcontrollerVoltage;
+			microcontrollerCurrent = 0.003 * microcontrollerVoltage;
 			float wantedDischargeCurrentCorrected = wantedDischargeCurrent;
 			// If USB connected, microcontroller and display consump current from USB
 			if (!usbConnected) {
@@ -407,50 +412,39 @@ void loop() {
 					display.print(loadCurrent, 3); 		
 				}
 
-				
-				y += (charHeight + 2);
-
-				if (selectedActionOnMain == setCurrent) {
-					display.setCursor(0, y);
-					display.print(F("Volt      V,  PWM")); 
-					display.setCursor(5*charWidth, y);
-					display.print(accumVoltage); 
-
-					display.setCursor(127 - 3*charWidth, y);
-					display.print(prevPwmValueForCurrent); 	
-				} else {
-					display.setCursor(0, y);
-					display.print(F("Voltage        V")); 
-					display.setCursor(9*charWidth, y);
-					display.print(accumVoltage); 
-				}			
-
 				y += (charHeight + 2);
 				display.setCursor(0, y);
-				display.print(F("Capacity          mAh"));
+				display.print(F("Voltage        V")); 
 				display.setCursor(9*charWidth, y);
-				display.print(accumCapacity_AH * 1000);
+				display.print(accumVoltage); 
 
-				unsigned long time_s = dischargeTime_s;
 
-				y += (charHeight + 2);
-				display.setCursor(0, y);
-				display.print(F("Time"));
+				if ((selectedActionOnMain == setCurrent) && debugMode) {
+					char t[16];
+					sprintf_P(t, PSTR("sh%dmV %dmA uC%dmA"), int(shuntVoltage * 1000), int(accumCurrent * 1000), 
+						int(microcontrollerCurrent * 1000));
+					y += (charHeight + 2);
+					display.setCursor(0, y);
+					display.print(t);
+					
+					sprintf_P(t, PSTR("ac%dmV PWM %d"), int(accumVoltageDivided * 1000), prevPwmValueForCurrent);
+					y += (charHeight + 2);
+					display.setCursor(0, y);
+					display.print(t);
+				} else {
+					y += (charHeight + 2);
+					display.setCursor(0, y);
+					display.print(F("Capacity          mAh"));
+					display.setCursor(9*charWidth, y);
+					display.print(accumCapacity_AH * 1000);
 
-				printTime(time_s, 50, y, charWidth);
+					unsigned long time_s = dischargeTime_s;
 
-				// char t[15];
-				// sprintf_P(t, PSTR("%dmV %dmA %dmA"), int(shuntVoltage * 1000), int(accumCurrent * 1000), 
-				// 	int(microcontrollerCurrent * 1000));
-				// y += (charHeight + 2);
-				// display.setCursor(0, y);
-				// display.print(t);
-				
-				// sprintf_P(t, PSTR("%dmA %dmV %dr"), int(wantedDischargeCurrentCorrected * 1000), int(wantedShuntVoltage * 1000), 
-				// 	int(PWMratio * 1000));
-				// y += (charHeight + 2);
-				// display.setCursor(0, y);
-				// display.print(t);
+					y += (charHeight + 2);
+					display.setCursor(0, y);
+					display.print(F("Time"));
+					printTime(time_s, 50, y, charWidth);
+				}
 
 				encoder.tick();
 				// Serial.print(micros()); 
@@ -497,6 +491,9 @@ void loop() {
 				if (wantedDischargeCurrent > maxDischargeCurrent) wantedDischargeCurrent = maxDischargeCurrent;
 			}
 
+			if (str.startsWith(F("debug")))
+				debugMode = !debugMode;
+
 		}
 
 		unsigned long periodFromLastSerial_us = curTime_us - lastTimeSerial_us;
@@ -518,7 +515,7 @@ void printTime(unsigned long time_s, byte startXpos, byte startYpos, byte charWi
 	byte min = time_s % 60;
 	byte hour = time_s / 60;
 
-	char t[15];
+	char t[16];
 	sprintf_P(t, PSTR("%3dh %02dm %02ds"), hour, min, sec);
 	display.setCursor(startXpos, startYpos);
 	display.print(t);
