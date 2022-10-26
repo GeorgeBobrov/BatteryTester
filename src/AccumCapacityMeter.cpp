@@ -8,8 +8,8 @@
 #include <GyverPWM.h>
 
 constexpr byte pinEncButton = 6;
-constexpr byte pinEnc1 = 3;
-constexpr byte pinEnc2 = 2;
+constexpr byte pinEnc1 = 2;
+constexpr byte pinEnc2 = 3;
 constexpr byte pinEnableDischarge = 4;
 constexpr byte pinPwmSetCurrent = 9;
 constexpr byte pinMeasureVoltage = A7;
@@ -100,10 +100,12 @@ float accumCapacity_AH;
 float threshholdVoltage; //Log capacity when reaching threshhold voltage
 
 constexpr unsigned long us_in_hour = 60UL * 60 * 1000 * 1000;
-void printTime(unsigned long time_s, byte startXpos, byte startYpos, byte charWidth);
+void printTime(unsigned long time_s, byte startXpos, byte startYpos);
 void sendMeasurementsToSerial(float Voltage, float Capacity_AH, unsigned long dischargeTime_s, float Current);
 // void printTableCaption(const char * msg);
 void printTableCaption(const __FlashStringHelper *ifsh);
+void drawLog(byte shiftFromHeader);
+void checkCommandsFromSerial();
 
 struct AccumCapacityRecord
 {
@@ -118,21 +120,34 @@ struct AccumCapacityRecord
 constexpr byte recordsInEEPROM = (EEPROM.length() / sizeof(AccumCapacityRecord)) - 1;
 constexpr byte offssetOfRecords = 4;
 
-enum class DisplayMode {
+constexpr byte charWidth = 6;
+constexpr byte charHeight = 10;
+constexpr byte fontBaseline = 3;
+constexpr byte yellowHeaderHeight = 16;
+// 63 (scrrenHeight) - 16 (tableHeaderHeight) = 48
+// 48 / charHeight (10) = 4.8, round up to 5 
+constexpr byte linesOfLogOnScreen = 5; 
+constexpr byte additionalSpacingForFirstLine = 3;
+
+enum class DisplayMode: int8_t {
 	main,
 	setCurrent,
+	viewLog,
 	off
 };
 
-enum SelectedActionOnMain {
+enum class SelectedActionOnMain: int8_t {
 	startDischarge,
 	setCurrent,
+	viewLog,
 	off
 };
 
 DisplayMode displayMode;
 SelectedActionOnMain selectedActionOnMain;
 bool debugMode;
+// For scrolling log
+byte shiftFromHeader; 
 
 void powerdownSleep() {
 	displayMode = DisplayMode::off;
@@ -198,23 +213,26 @@ void loop() {
 
 		switch (displayMode) {
 			case DisplayMode::main:
-				if (encoder.isLeft()) {
-					selectedActionOnMain = SelectedActionOnMain( byte(selectedActionOnMain) + 1);
-					if (selectedActionOnMain > SelectedActionOnMain::off) selectedActionOnMain = 0;
-				}
 				if (encoder.isRight()) {
+					selectedActionOnMain = SelectedActionOnMain( byte(selectedActionOnMain) + 1);
+					if (selectedActionOnMain > SelectedActionOnMain::off) selectedActionOnMain = SelectedActionOnMain(0);
+				}
+				if (encoder.isLeft()) {
 					selectedActionOnMain = SelectedActionOnMain( byte(selectedActionOnMain) - 1);
-					if (selectedActionOnMain < 0) selectedActionOnMain = SelectedActionOnMain::off;
+					if (selectedActionOnMain < SelectedActionOnMain(0)) selectedActionOnMain = SelectedActionOnMain::off;
 				}
 				if (encoder.isClick()) {
 					switch (selectedActionOnMain) {
-						case startDischarge:
+						case SelectedActionOnMain::startDischarge:
 							startStopDischarge(!enableDischarge);
 							break;
-						case setCurrent:
+						case SelectedActionOnMain::setCurrent:
 							displayMode = DisplayMode::setCurrent;
 							break;
-						case off:
+						case SelectedActionOnMain::viewLog:
+							displayMode = DisplayMode::viewLog;
+							break;
+						case SelectedActionOnMain::off:
 							powerdownSleep();
 							break;
 					}
@@ -222,18 +240,34 @@ void loop() {
 			break;
 				
 			case DisplayMode::setCurrent:
-				if (encoder.isLeft()) {
+				if (encoder.isRight()) {
 					wantedDischargeCurrent += 0.05;
-					if (wantedDischargeCurrent > maxDischargeCurrent) wantedDischargeCurrent = maxDischargeCurrent;
+					if (wantedDischargeCurrent > maxDischargeCurrent) 
+						wantedDischargeCurrent = maxDischargeCurrent;
 					prevPwmValueForCurrent = 0;
 				}
-				if (encoder.isRight()) {
+				if (encoder.isLeft()) {
 					wantedDischargeCurrent -= 0.05; 
 					if (wantedDischargeCurrent < 0) wantedDischargeCurrent = 0;
 					prevPwmValueForCurrent = 0;
 				}
 				if (encoder.isClick())
 					displayMode = DisplayMode::main;
+			break;
+
+			case DisplayMode::viewLog:
+				if (encoder.isLeft()) {
+					if (shiftFromHeader < recordsInEEPROM - linesOfLogOnScreen) 
+						shiftFromHeader++;
+				}
+				if (encoder.isRight()) {
+					if (shiftFromHeader > 0)
+						shiftFromHeader--; 
+				}
+				if (encoder.isClick()) {
+					displayMode = DisplayMode::main;
+					shiftFromHeader = 0;
+				}
 			break;
 
 			case DisplayMode::off:	
@@ -243,7 +277,7 @@ void loop() {
 					restoreAfterSleep();
 			break;
 		} 
-		if ((selectedActionOnMain == setCurrent) && encoder.isHolded())
+		if ((selectedActionOnMain == SelectedActionOnMain::setCurrent) && encoder.isHolded())
 			debugMode = !debugMode;
 
 
@@ -359,9 +393,7 @@ void loop() {
 				// Serial.println(F(" Before Display Paint"));
 
 				display.setFont(u8g2_font_6x10_tf); 
-				constexpr byte charWidth = 6;
-				constexpr byte charHeight = 10;
-				byte y = 10;
+				byte y = charHeight - fontBaseline + additionalSpacingForFirstLine;
 
 				switch (displayMode) {
 
@@ -369,19 +401,30 @@ void loop() {
 						// Draw button
 						display.setCursor(2, y);
 						switch (selectedActionOnMain) {
-							case startDischarge:
+							case SelectedActionOnMain::startDischarge:
 								if (enableDischarge)
 									display.print(F("Stop Discharge"));
 								else	 
 									display.print(F("Start Discharge"));
-								break;
+							break;
 
-							case setCurrent:
-								display.print(F("Set Discharge Current")); break; 
-							case off:
-								display.print(F("Off")); break; 
+							case SelectedActionOnMain::setCurrent:
+								display.print(F("Set Discharge Current")); 
+							break; 
+
+							case SelectedActionOnMain::viewLog:
+								drawLog(0); 
+							break;
+								
+							case SelectedActionOnMain::off:
+								display.print(F("Off")); 
+							break; 
 						}	
-						display.drawFrame(0, y-9, 127, 13);
+						display.drawFrame(0, y-9, 128, 13);
+					break;
+					
+					case DisplayMode::viewLog:
+						drawLog(shiftFromHeader); 
 					break;
 
 					case DisplayMode::setCurrent:
@@ -400,8 +443,9 @@ void loop() {
 					break;
 				}
 
+				if (selectedActionOnMain != SelectedActionOnMain::viewLog) {
 				// Offset of top yellow part of display (and minus baseline offset of font)
-				y = 16 + charHeight - 3;
+				y = yellowHeaderHeight + charHeight - fontBaseline;
 				display.setCursor(0, y);
 				if (enableDischarge) {
 					display.print(F("Discharge")); 
@@ -412,27 +456,27 @@ void loop() {
 					display.print(loadCurrent, 3); 		
 				}
 
-				y += (charHeight + 2);
+				constexpr byte spacingBetweenLines = 2; 
+				y += (charHeight + spacingBetweenLines);
 				display.setCursor(0, y);
 				display.print(F("Voltage        V")); 
 				display.setCursor(9*charWidth, y);
 				display.print(accumVoltage); 
 
-
-				if ((selectedActionOnMain == setCurrent) && debugMode) {
+				if ((selectedActionOnMain == SelectedActionOnMain::setCurrent) && debugMode) {
 					char t[16];
 					sprintf_P(t, PSTR("sh%dmV %dmA uC%dmA"), int(shuntVoltage * 1000), int(accumCurrent * 1000), 
 						int(microcontrollerCurrent * 1000));
-					y += (charHeight + 2);
+					y += (charHeight + spacingBetweenLines);
 					display.setCursor(0, y);
 					display.print(t);
 					
 					sprintf_P(t, PSTR("ac%dmV PWM %d"), int(accumVoltageDivided * 1000), prevPwmValueForCurrent);
-					y += (charHeight + 2);
+					y += (charHeight + spacingBetweenLines);
 					display.setCursor(0, y);
 					display.print(t);
 				} else {
-					y += (charHeight + 2);
+					y += (charHeight + spacingBetweenLines);
 					display.setCursor(0, y);
 					display.print(F("Capacity          mAh"));
 					display.setCursor(9*charWidth, y);
@@ -440,12 +484,12 @@ void loop() {
 
 					unsigned long time_s = dischargeTime_s;
 
-					y += (charHeight + 2);
+					y += (charHeight + spacingBetweenLines);
 					display.setCursor(0, y);
 					display.print(F("Time"));
-					printTime(time_s, 50, y, charWidth);
+					printTime(time_s, 50, y);
 				}
-
+				}
 				encoder.tick();
 				// Serial.print(micros()); 
 				// Serial.println(F(" Before Display nextPage"));
@@ -454,47 +498,7 @@ void loop() {
 
 		}
 
-		if (Serial.available() > 0) {
-			auto str = Serial.readString();
-			if (str == F("meas"))
-				enableSendMeasurementsToSerial = !enableSendMeasurementsToSerial;
-
-			if (str == F("log")) {
-				AccumCapacityRecord capacityRecord;
-
-				byte recordsHead = EEPROM[0];
-
-				printTableCaption(F("***Log***"));	
-
-				for (byte i = recordsHead + 1; i < recordsInEEPROM; i++) {
-					EEPROM.get(offssetOfRecords + i * sizeof(AccumCapacityRecord), capacityRecord);
-
-					sendMeasurementsToSerial(capacityRecord.Voltage, capacityRecord.Capacity_AH, 
-						capacityRecord.dischargeTime_s, capacityRecord.Current);
-				}
-				for (byte i = 0; i <= recordsHead; i++) {
-					EEPROM.get(offssetOfRecords + i * sizeof(AccumCapacityRecord), capacityRecord);
-
-					sendMeasurementsToSerial(capacityRecord.Voltage, capacityRecord.Capacity_AH, 
-						capacityRecord.dischargeTime_s, capacityRecord.Current);
-				}
-
-				printTableCaption(F("***Log end***"));
-
-			}
-
-			if (str.startsWith(F("set current"))) {
-				str.remove(0, 11);
-				str.trim();
-				wantedDischargeCurrent = str.toFloat();
-				if (wantedDischargeCurrent < 0) wantedDischargeCurrent = 0;
-				if (wantedDischargeCurrent > maxDischargeCurrent) wantedDischargeCurrent = maxDischargeCurrent;
-			}
-
-			if (str.startsWith(F("debug")))
-				debugMode = !debugMode;
-
-		}
+		checkCommandsFromSerial();
 
 		unsigned long periodFromLastSerial_us = curTime_us - lastTimeSerial_us;
 		if ((periodFromLastSerial_us >= 1000000) && enableSendMeasurementsToSerial) {
@@ -509,7 +513,7 @@ void loop() {
 
 }
 
-void printTime(unsigned long time_s, byte startXpos, byte startYpos, byte charWidth) {
+void printTime(unsigned long time_s, byte startXpos, byte startYpos) {
 	byte sec = time_s % 60;
 	time_s = time_s / 60;
 	byte min = time_s % 60;
@@ -519,6 +523,79 @@ void printTime(unsigned long time_s, byte startXpos, byte startYpos, byte charWi
 	sprintf_P(t, PSTR("%3dh %02dm %02ds"), hour, min, sec);
 	display.setCursor(startXpos, startYpos);
 	display.print(t);
+}
+
+void drawOneLogLine(byte lineNum, AccumCapacityRecord &capacityRecord) {
+	byte y = yellowHeaderHeight + (charHeight * lineNum) - fontBaseline;
+	display.setCursor(0, y);
+	// 0.00 (4 chars) 
+	display.print(capacityRecord.Voltage); 
+
+	display.setCursor(5*charWidth, y);
+	// 0000 (4 chars max) 
+	display.print(capacityRecord.Capacity_AH * 1000, 0); 
+
+	unsigned long mins = capacityRecord.dischargeTime_s / 60;
+	byte min = mins % 60;
+	byte hour = mins / 60;
+	char t[16];
+	sprintf_P(t, PSTR("%3dh%02dm"), hour, min);
+	display.setCursor(10*charWidth, y);
+	display.print(t);
+
+	display.setCursor(18*charWidth, y);
+	display.print(capacityRecord.Current * 1000, 0);
+
+	display.drawHLine(0, y + 1, 128);
+}
+
+void drawLog(byte shiftFromHeader) {
+	byte y = charHeight - fontBaseline + additionalSpacingForFirstLine;
+	display.setCursor(2, y);
+	display.print(F("Volt")); 
+
+	display.setCursor(5*charWidth, y);
+	display.print(F("mAH")); 
+
+	display.setCursor(10*charWidth, y);
+	display.print(F("Time")); 
+
+	display.setCursor(18*charWidth, y);
+	display.print(F("mA")); 	
+
+	display.drawHLine(0, 14, 128);
+
+	display.drawVLine(4*charWidth + 3, 0, 64);
+	display.drawVLine(9*charWidth + 3, 0, 64);
+	display.drawVLine(17*charWidth + 3, 0, 64);
+
+	AccumCapacityRecord capacityRecord;
+
+	byte recordsHead = EEPROM[0];
+
+	// for (byte i = recordsHead; i >= 0; i--) {
+	// 	if (lineOnScreen == 0) break;
+	// 	EEPROM.get(offssetOfRecords + i * sizeof(AccumCapacityRecord), capacityRecord);
+
+	// 	drawOneLogLine(lineOnScreen, capacityRecord);
+
+	// 	lineOnScreen--;
+	// }
+	// for (byte i = recordsInEEPROM; i > recordsHead + 1; i--) {
+	// 	if (lineOnScreen == 0) break;
+
+	// 	lineOnScreen--;
+	// }
+
+	
+	for (byte lineIndex = 1; lineIndex <= linesOfLogOnScreen; lineIndex++) {
+		byte ri = (lineIndex + recordsHead + recordsInEEPROM - shiftFromHeader - linesOfLogOnScreen) % recordsInEEPROM;
+
+		EEPROM.get(offssetOfRecords + ri * sizeof(AccumCapacityRecord), capacityRecord);
+
+		drawOneLogLine(lineIndex, capacityRecord);
+	}
+
 }
 
 
@@ -546,6 +623,50 @@ void sendMeasurementsToSerial(float Voltage, float Capacity_AH, unsigned long di
 		Serial.print(F("\t"));
 
 		Serial.println(Current, 3); 
+	}
+}
+
+// void sendTimeDebugInfoToSerial() {
+
+// }
+
+void checkCommandsFromSerial() {
+	if (Serial.available() > 0) {
+		auto str = Serial.readString();
+		if (str == F("meas"))
+			enableSendMeasurementsToSerial = !enableSendMeasurementsToSerial;
+
+		if (str == F("log")) {
+			AccumCapacityRecord capacityRecord;
+
+			byte recordsHead = EEPROM[0];
+
+			printTableCaption(F("***Log***"));	
+
+			for (byte i = 0; i < recordsInEEPROM; i++) {
+				byte ri = (i + recordsHead + 1) % recordsInEEPROM;
+
+				EEPROM.get(offssetOfRecords + ri * sizeof(AccumCapacityRecord), capacityRecord);
+
+				sendMeasurementsToSerial(capacityRecord.Voltage, capacityRecord.Capacity_AH, 
+					capacityRecord.dischargeTime_s, capacityRecord.Current);
+			}
+
+			printTableCaption(F("***Log end***"));
+
+		}
+
+		if (str.startsWith(F("set current"))) {
+			str.remove(0, 11);
+			str.trim();
+			wantedDischargeCurrent = str.toFloat();
+			if (wantedDischargeCurrent < 0) wantedDischargeCurrent = 0;
+			if (wantedDischargeCurrent > maxDischargeCurrent) wantedDischargeCurrent = maxDischargeCurrent;
+		}
+
+		if (str.startsWith(F("debug")))
+			debugMode = !debugMode;
+
 	}
 }
 
