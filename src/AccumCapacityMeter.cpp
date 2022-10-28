@@ -97,15 +97,17 @@ byte prevPwmValueForCurrent;
 unsigned long dischargeTime_s; 
 unsigned long sumOfSeveralPeriods_us; 
 float accumCapacity_AH;
+float lastSavedAccumCapacity_AH;
 float threshholdVoltage; //Log capacity when reaching threshhold voltage
 
 constexpr unsigned long us_in_hour = 60UL * 60 * 1000 * 1000;
 void printTime(unsigned long time_s, byte startXpos, byte startYpos);
-void sendMeasurementsToSerial(float Voltage, float Capacity_AH, unsigned long dischargeTime_s, float Current);
+void sendMeasurementsToSerial(float &Voltage, float &Capacity_AH, unsigned long &dischargeTime_s, float &Current);
 // void printTableCaption(const char * msg);
 void printTableCaption(const __FlashStringHelper *ifsh);
 void drawLog(byte shiftFromHeader);
 void checkCommandsFromSerial();
+// void sendTimeDebugInfoToSerial(const __FlashStringHelper *msg, byte marker = 0);
 
 struct AccumCapacityRecord
 {
@@ -114,6 +116,7 @@ struct AccumCapacityRecord
 	float Capacity_AH;
 	unsigned long dischargeTime_s;
 };
+void saveRecordToEEPROM(AccumCapacityRecord &capacityRecord, bool dontMoveHeader = false);
 
 // need to to add "constexpr" in EEPROM.h in this line:
 //    constexpr uint16_t length()                    { return E2END + 1; }
@@ -190,9 +193,7 @@ void startStopDischarge(bool l_enableDischarge) {
 }
 
 void loop() {
-	// Serial.print(micros()); 
-	// Serial.println(F(" Start Loop"));
-
+	// sendTimeDebugInfoToSerial(F(" Start_Loop "), 1);
 	encoder.tick();
 
 	unsigned long curTime_us = micros();
@@ -360,17 +361,28 @@ void loop() {
 			capacityRecord.Capacity_AH = accumCapacity_AH;
 			capacityRecord.dischargeTime_s = dischargeTime_s;
 
-			byte recordsHead = EEPROM[0];
-			recordsHead = (recordsHead + 1) % recordsInEEPROM;
-
-			EEPROM.put(offssetOfRecords + recordsHead * sizeof(AccumCapacityRecord), capacityRecord);
-			EEPROM[0] = recordsHead;
-
+			saveRecordToEEPROM(capacityRecord);
 			sendMeasurementsToSerial(accumVoltage, accumCapacity_AH, dischargeTime_s, loadCurrent);
 
 			// Next log when accum discharges more by 0.1V
 			threshholdVoltage = (round((accumVoltage - 0.1) * 10)) / 10.0;  
+			lastSavedAccumCapacity_AH = accumCapacity_AH;
 		}
+
+		// Accumulator may suddenly turn off on low voltages (due to protect sircuit), so
+		// save AccumCapacityRecord periodically
+		if (!usbConnected && (threshholdVoltage == stopDischargeVoltage) && enableDischarge) 
+			if (accumCapacity_AH > lastSavedAccumCapacity_AH * 1.01) {
+				AccumCapacityRecord capacityRecord;
+				capacityRecord.Voltage = accumVoltage;
+				capacityRecord.Current = loadCurrent;
+				capacityRecord.Capacity_AH = accumCapacity_AH;
+				capacityRecord.dischargeTime_s = dischargeTime_s;
+
+				saveRecordToEEPROM(capacityRecord, true);			
+
+				lastSavedAccumCapacity_AH = accumCapacity_AH;
+			}
 
 
 		if ((accumVoltage <= stopDischargeVoltage) && enableDischarge) { // stopDischarge
@@ -385,12 +397,13 @@ void loop() {
 
 		if (displayMode != DisplayMode::off) {
 			display.firstPage();
-			// Serial.print(micros()); 
-			// Serial.println(F(" Before Display Loop"));
+			// sendTimeDebugInfoToSerial(F(" Before_Display_Loop "));
+
 			byte pageNum = 0;
 			do {
-				// Serial.print(micros()); 
-				// Serial.println(F(" Before Display Paint"));
+				// sendTimeDebugInfoToSerial(F(" Before_Display_Paint "));
+				encoder.tick();
+				if (encoder.isTurn()) break;
 
 				display.setFont(u8g2_font_6x10_tf); 
 				byte y = charHeight - fontBaseline + additionalSpacingForFirstLine;
@@ -491,8 +504,9 @@ void loop() {
 				}
 				}
 				encoder.tick();
-				// Serial.print(micros()); 
-				// Serial.println(F(" Before Display nextPage"));
+				if (encoder.isTurn()) break;
+				// sendTimeDebugInfoToSerial(F(" Before_Display_nextPage "));
+
 				pageNum++;
 			} while ( display.nextPage() );
 
@@ -506,8 +520,7 @@ void loop() {
 			sendMeasurementsToSerial(accumVoltage, accumCapacity_AH, dischargeTime_s, loadCurrent);
 		}
 
-		// Serial.print(micros()); 
-		// Serial.println(F(" End Loop"));
+		// sendTimeDebugInfoToSerial(F(" End_Loop ")); 
 
 	}
 
@@ -573,21 +586,6 @@ void drawLog(byte shiftFromHeader) {
 
 	byte recordsHead = EEPROM[0];
 
-	// for (byte i = recordsHead; i >= 0; i--) {
-	// 	if (lineOnScreen == 0) break;
-	// 	EEPROM.get(offssetOfRecords + i * sizeof(AccumCapacityRecord), capacityRecord);
-
-	// 	drawOneLogLine(lineOnScreen, capacityRecord);
-
-	// 	lineOnScreen--;
-	// }
-	// for (byte i = recordsInEEPROM; i > recordsHead + 1; i--) {
-	// 	if (lineOnScreen == 0) break;
-
-	// 	lineOnScreen--;
-	// }
-
-	
 	for (byte lineIndex = 1; lineIndex <= linesOfLogOnScreen; lineIndex++) {
 		byte ri = (lineIndex + recordsHead + recordsInEEPROM - shiftFromHeader - linesOfLogOnScreen) % recordsInEEPROM;
 
@@ -611,7 +609,7 @@ void printTableCaption(const __FlashStringHelper *msg) {
 // 	Serial.println(msg);
 // }
 
-void sendMeasurementsToSerial(float Voltage, float Capacity_AH, unsigned long dischargeTime_s, float Current) {
+void sendMeasurementsToSerial(float &Voltage, float &Capacity_AH, unsigned long &dischargeTime_s, float &Current) {
 	if (usbConnected) {
 		Serial.print(Voltage); 
 		Serial.print(F("\t"));
@@ -626,9 +624,34 @@ void sendMeasurementsToSerial(float Voltage, float Capacity_AH, unsigned long di
 	}
 }
 
-// void sendTimeDebugInfoToSerial() {
+// unsigned long prevDebugInfoTime;  
+// unsigned long markerDebugInfoTime;  
+// void sendTimeDebugInfoToSerial(const __FlashStringHelper *msg, byte marker = 0) {
+// 	if (usbConnected && debugMode) {
+// 		unsigned long curDebugInfoTime = millis();
+// 		Serial.print(curDebugInfoTime); 
+// 		Serial.print(msg);
+// 		Serial.println(curDebugInfoTime - prevDebugInfoTime); 
+		
+// 		if (marker) {
+// 			Serial.print(F("marker "));
+// 			Serial.println(curDebugInfoTime - markerDebugInfoTime); 
+// 			markerDebugInfoTime = curDebugInfoTime;
+// 		}
 
+// 		prevDebugInfoTime = curDebugInfoTime;
+// 	}
 // }
+
+void saveRecordToEEPROM(AccumCapacityRecord &capacityRecord, bool dontMoveHeader/* = false*/) {
+	byte recordsHead = EEPROM[0];
+	if (!dontMoveHeader) {
+		recordsHead = (recordsHead + 1) % recordsInEEPROM;
+		EEPROM[0] = recordsHead;
+	}	
+
+	EEPROM.put(offssetOfRecords + recordsHead * sizeof(AccumCapacityRecord), capacityRecord);
+}
 
 void checkCommandsFromSerial() {
 	if (Serial.available() > 0) {
