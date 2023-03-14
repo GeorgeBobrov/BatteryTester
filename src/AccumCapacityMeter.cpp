@@ -87,6 +87,7 @@ void setup() {
 unsigned long lastTimeMeasure_us = 0;
 unsigned long lastTimeSerial_us = 0;
 bool enableSendMeasurementsToSerial;
+bool enableSendOscillogramToSerial;
 bool usbConnected;
 bool prevUsbConnected;
 
@@ -103,6 +104,7 @@ float threshholdVoltage; //Log capacity when reaching threshhold voltage
 constexpr unsigned long us_in_hour = 60UL * 60 * 1000 * 1000;
 void printTime(unsigned long time_s, byte startXpos, byte startYpos);
 void sendMeasurementsToSerial(float &Voltage, float &Capacity_AH, unsigned long &dischargeTime_s, float &Current);
+void sendOscillogramToSerial(float &Time_s, float &Voltage, float &Current, float &Capacity_AH);
 // void printTableCaption(const char * msg);
 void printTableCaption(const __FlashStringHelper *ifsh);
 void drawLog(byte shiftFromHeader);
@@ -156,6 +158,7 @@ byte shiftFromHeader;
 unsigned long timeDischargeStarted;
 unsigned long timeDischargeStopped;
 bool rewriteLastRecord;
+unsigned long timeOscillogramStarted_us;
 
 void powerdownSleep() {
 	displayMode = DisplayMode::off;
@@ -552,6 +555,10 @@ void loop() {
 			sendMeasurementsToSerial(accumVoltage, accumCapacity_AH, dischargeTime_s, loadCurrent);
 		}
 
+		if (enableSendOscillogramToSerial) {
+			float timeFromOscillogramStarted_s = (curTime_us - timeOscillogramStarted_us)  / 1000000.0;
+			sendOscillogramToSerial(timeFromOscillogramStarted_s, accumVoltage, loadCurrent, accumCapacity_AH);
+		}
 		// sendTimeDebugInfoToSerial(F(" End_Loop ")); 
 
 	}
@@ -630,7 +637,7 @@ void drawLog(byte shiftFromHeader) {
 
 
 void printTableCaption(const __FlashStringHelper *msg) {
-	if (usbConnected) {
+	if (usbConnected && !enableSendOscillogramToSerial) {
 		Serial.print(F("Voltage\tCapacity_mAH\tTime_s\tCurrent\t"));
 		Serial.println(msg);
 	}
@@ -642,7 +649,7 @@ void printTableCaption(const __FlashStringHelper *msg) {
 // }
 
 void sendMeasurementsToSerial(float &Voltage, float &Capacity_AH, unsigned long &dischargeTime_s, float &Current) {
-	if (usbConnected) {
+	if (usbConnected && !enableSendOscillogramToSerial) {
 		Serial.print(Voltage); 
 		Serial.print(F("\t"));
 
@@ -656,6 +663,20 @@ void sendMeasurementsToSerial(float &Voltage, float &Capacity_AH, unsigned long 
 	}
 }
 
+void sendOscillogramToSerial(float &Time_s, float &Voltage, float &Current, float &Capacity_AH) {
+	if (usbConnected) {
+		Serial.print(Time_s, 3); 
+		Serial.print(F("\t"));
+
+		Serial.print(Voltage, 3); 
+		Serial.print(F("\t"));
+
+		Serial.print(Current, 3); 
+		Serial.print(F("\t"));
+
+		Serial.println(Capacity_AH * 1000); 
+	}
+}
 // unsigned long prevDebugInfoTime;  
 // unsigned long markerDebugInfoTime;  
 // void sendTimeDebugInfoToSerial(const __FlashStringHelper *msg, byte marker = 0) {
@@ -690,6 +711,11 @@ void checkCommandsFromSerial() {
 		auto str = Serial.readString();
 		if (str == F("meas"))
 			enableSendMeasurementsToSerial = !enableSendMeasurementsToSerial;
+
+		if (str == F("oscil")) {
+			enableSendOscillogramToSerial = !enableSendOscillogramToSerial;
+			timeOscillogramStarted_us = micros();
+		}
 
 		if (str == F("log")) {
 			AccumCapacityRecord capacityRecord;
