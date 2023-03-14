@@ -116,7 +116,7 @@ struct AccumCapacityRecord
 	float Capacity_AH;
 	unsigned long dischargeTime_s;
 };
-void saveRecordToEEPROM(AccumCapacityRecord &capacityRecord, bool dontMoveHeader = false);
+void saveRecordToEEPROM(AccumCapacityRecord &capacityRecord, bool rewriteLastRecord = false);
 
 // need to to add "constexpr" in EEPROM.h in this line:
 //    constexpr uint16_t length()                    { return E2END + 1; }
@@ -135,6 +135,7 @@ constexpr byte additionalSpacingForFirstLine = 3;
 enum class DisplayMode: int8_t {
 	main,
 	setCurrent,
+	// measureRin,
 	viewLog,
 	off
 };
@@ -142,6 +143,7 @@ enum class DisplayMode: int8_t {
 enum class SelectedActionOnMain: int8_t {
 	startDischarge,
 	setCurrent,
+	// measureRin,
 	viewLog,
 	off
 };
@@ -151,6 +153,9 @@ SelectedActionOnMain selectedActionOnMain;
 bool debugMode;
 // For scrolling log
 byte shiftFromHeader; 
+unsigned long timeDischargeStarted;
+unsigned long timeDischargeStopped;
+bool rewriteLastRecord;
 
 void powerdownSleep() {
 	displayMode = DisplayMode::off;
@@ -226,10 +231,15 @@ void loop() {
 					switch (selectedActionOnMain) {
 						case SelectedActionOnMain::startDischarge:
 							startStopDischarge(!enableDischarge);
+							if (enableDischarge)
+								timeDischargeStarted = curTime_us;
 							break;
 						case SelectedActionOnMain::setCurrent:
 							displayMode = DisplayMode::setCurrent;
 							break;
+						// case SelectedActionOnMain::measureRin:
+						// 	displayMode = DisplayMode::measureRin;
+						// 	break;
 						case SelectedActionOnMain::viewLog:
 							displayMode = DisplayMode::viewLog;
 							break;
@@ -311,16 +321,26 @@ void loop() {
 		float shuntVoltage = (shuntVoltageADC / MAX_ADC_VALUE) * referenceVoltageCorrected;
 		float accumCurrent = shuntVoltage / currentShuntResistance;
 		float loadCurrent = accumCurrent;
-		float microcontrollerCurrent;
+		// Microcontroller and display consumption (this was measured and dependency identified)
+		float microcontrollerCurrent = 0.003 * microcontrollerVoltage;
+		if (!usbConnected) 
+			loadCurrent += microcontrollerCurrent;
+
+		// Save log just a secont after discharge started for internal resistance measurement
+		if ((timeDischargeStarted > 0) && (curTime_us - timeDischargeStarted >= 1000000)) {
+			timeDischargeStarted = 0;
+
+			AccumCapacityRecord capacityRecord{.Voltage = accumVoltage, .Current = loadCurrent, 
+				.Capacity_AH = accumCapacity_AH, .dischargeTime_s = dischargeTime_s};
+
+			saveRecordToEEPROM(capacityRecord);
+		}		
 
 		if (enableDischarge) {
-			// Microcontroller and display consumption (this was measured and dependency identified)
-			microcontrollerCurrent = 0.003 * microcontrollerVoltage;
 			float wantedDischargeCurrentCorrected = wantedDischargeCurrent;
 			// If USB connected, microcontroller and display consump current from USB
-			if (!usbConnected) {
 			// if powered from accumulator, we need to take microcontroller current into account	
-				loadCurrent += microcontrollerCurrent;
+			if (!usbConnected) {
 				wantedDischargeCurrentCorrected -= microcontrollerCurrent;
 				if (wantedDischargeCurrentCorrected < 0) wantedDischargeCurrentCorrected = 0;
 			}
@@ -355,13 +375,16 @@ void loop() {
 
 		// Log to EEPROM capacity when reaching threshhold voltage
 		if ((accumVoltage <= threshholdVoltage) && enableDischarge) { 
-			AccumCapacityRecord capacityRecord;
-			capacityRecord.Voltage = accumVoltage;
-			capacityRecord.Current = loadCurrent;
-			capacityRecord.Capacity_AH = accumCapacity_AH;
-			capacityRecord.dischargeTime_s = dischargeTime_s;
+			// Stop timer to prevent excessive log saving
+			if ((timeDischargeStarted > 0) && (curTime_us - timeDischargeStarted < 1000000)) 
+				timeDischargeStarted = 0;
 
-			saveRecordToEEPROM(capacityRecord);
+			AccumCapacityRecord capacityRecord{.Voltage = accumVoltage, .Current = loadCurrent, 
+				.Capacity_AH = accumCapacity_AH, .dischargeTime_s = dischargeTime_s};
+
+			saveRecordToEEPROM(capacityRecord, rewriteLastRecord);
+			rewriteLastRecord = false;
+
 			sendMeasurementsToSerial(accumVoltage, accumCapacity_AH, dischargeTime_s, loadCurrent);
 
 			// Next log when accum discharges more by 0.1V
@@ -373,13 +396,11 @@ void loop() {
 		// save AccumCapacityRecord periodically
 		if (!usbConnected && (threshholdVoltage == stopDischargeVoltage) && enableDischarge) 
 			if (accumCapacity_AH > lastSavedAccumCapacity_AH * 1.01) {
-				AccumCapacityRecord capacityRecord;
-				capacityRecord.Voltage = accumVoltage;
-				capacityRecord.Current = loadCurrent;
-				capacityRecord.Capacity_AH = accumCapacity_AH;
-				capacityRecord.dischargeTime_s = dischargeTime_s;
+				AccumCapacityRecord capacityRecord{.Voltage = accumVoltage, .Current = loadCurrent, 
+					.Capacity_AH = accumCapacity_AH, .dischargeTime_s = dischargeTime_s};
 
-				saveRecordToEEPROM(capacityRecord, true);			
+				saveRecordToEEPROM(capacityRecord, rewriteLastRecord);			
+				rewriteLastRecord = true;
 
 				lastSavedAccumCapacity_AH = accumCapacity_AH;
 			}
@@ -388,12 +409,23 @@ void loop() {
 		if ((accumVoltage <= stopDischargeVoltage) && enableDischarge) { // stopDischarge
 			startStopDischarge(false);
 
-			Serial.flush();
-			powerdownSleep();				
+			// Wait a second after discharge stopped, save log and then fall to sleep
+			timeDischargeStopped = curTime_us;
 
 			// tone(LED_BUILTIN, 1, 2000);
 		}
 
+		if ((timeDischargeStopped > 0) && (curTime_us - timeDischargeStopped >= 1000000)) {
+			timeDischargeStopped = 0;
+
+			AccumCapacityRecord capacityRecord{.Voltage = accumVoltage, .Current = loadCurrent, 
+				.Capacity_AH = accumCapacity_AH, .dischargeTime_s = dischargeTime_s};
+
+			saveRecordToEEPROM(capacityRecord);
+
+			Serial.flush();
+			powerdownSleep();
+		}
 
 		if (displayMode != DisplayMode::off) {
 			display.firstPage();
@@ -643,9 +675,9 @@ void sendMeasurementsToSerial(float &Voltage, float &Capacity_AH, unsigned long 
 // 	}
 // }
 
-void saveRecordToEEPROM(AccumCapacityRecord &capacityRecord, bool dontMoveHeader/* = false*/) {
+void saveRecordToEEPROM(AccumCapacityRecord &capacityRecord, bool rewriteLastRecord/* = false*/) {
 	byte recordsHead = EEPROM[0];
-	if (!dontMoveHeader) {
+	if (!rewriteLastRecord) {
 		recordsHead = (recordsHead + 1) % recordsInEEPROM;
 		EEPROM[0] = recordsHead;
 	}	
