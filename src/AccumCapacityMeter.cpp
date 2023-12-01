@@ -93,7 +93,7 @@ bool prevUsbConnected;
 
 bool enableDischarge;
 bool enableShowOnDisplay = true;
-byte prevPwmValueForCurrent;
+uint16_t prevPwmValueForCurrent;
 
 unsigned long dischargeTime_s; 
 unsigned long sumOfSeveralPeriods_us; 
@@ -159,6 +159,7 @@ unsigned long timeDischargeStarted;
 unsigned long timeDischargeStopped;
 bool rewriteLastRecord;
 unsigned long timeOscillogramStarted_us;
+uint16_t oscilPeriod_ms;
 
 void powerdownSleep() {
 	displayMode = DisplayMode::off;
@@ -330,7 +331,7 @@ void loop() {
 			loadCurrent += microcontrollerCurrent;
 
 		// Save log just a secont after discharge started for internal resistance measurement
-		if ((timeDischargeStarted > 0) && (curTime_us - timeDischargeStarted >= 1000000)) {
+		if ((timeDischargeStarted > 0) && (curTime_us - timeDischargeStarted >= 3000000)) {
 			timeDischargeStarted = 0;
 
 			AccumCapacityRecord capacityRecord{.Voltage = accumVoltage, .Current = loadCurrent, 
@@ -364,7 +365,7 @@ void loop() {
 			// Since the charge and discharge resistances are not equal, a correction is needed 
 			constexpr float PwmCorrectionCoef = 1.04;
 			constexpr float PwmStepInV = (redLedVoltage / MAX_PWM_VALUE) * PwmCorrectionCoef;
-			word pwmValueForCurrent = wantedShuntVoltage / PwmStepInV;
+			uint16_t pwmValueForCurrent = wantedShuntVoltage / PwmStepInV;
 			pwmValueForCurrent = min(pwmValueForCurrent, MAX_PWM_VALUE);
 			if ((pwmValueForCurrent > prevPwmValueForCurrent * 1.15) ||
 				(pwmValueForCurrent == 0) ||
@@ -378,9 +379,9 @@ void loop() {
 
 		// Log to EEPROM capacity when reaching threshhold voltage
 		if ((accumVoltage <= threshholdVoltage) && enableDischarge) { 
-			// Stop timer to prevent excessive log saving
-			if ((timeDischargeStarted > 0) && (curTime_us - timeDischargeStarted < 1000000)) 
-				timeDischargeStarted = 0;
+			// // Stop timer to prevent excessive log saving
+			// if ((timeDischargeStarted > 0) && (curTime_us - timeDischargeStarted < 1000000)) 
+			// 	timeDischargeStarted = 0;
 
 			AccumCapacityRecord capacityRecord{.Voltage = accumVoltage, .Current = loadCurrent, 
 				.Capacity_AH = accumCapacity_AH, .dischargeTime_s = dischargeTime_s};
@@ -418,7 +419,7 @@ void loop() {
 			// tone(LED_BUILTIN, 1, 2000);
 		}
 
-		if ((timeDischargeStopped > 0) && (curTime_us - timeDischargeStopped >= 1000000)) {
+		if ((timeDischargeStopped > 0) && (curTime_us - timeDischargeStopped >= 3000000)) {
 			timeDischargeStopped = 0;
 
 			AccumCapacityRecord capacityRecord{.Voltage = accumVoltage, .Current = loadCurrent, 
@@ -426,8 +427,10 @@ void loop() {
 
 			saveRecordToEEPROM(capacityRecord);
 
-			Serial.flush();
-			powerdownSleep();
+			if (!(usbConnected && enableSendOscillogramToSerial)) {
+				Serial.flush();
+				powerdownSleep();
+			}
 		}
 
 		if (displayMode != DisplayMode::off) {
@@ -550,14 +553,19 @@ void loop() {
 		checkCommandsFromSerial();
 
 		unsigned long periodFromLastSerial_us = curTime_us - lastTimeSerial_us;
-		if ((periodFromLastSerial_us >= 1000000) && enableSendMeasurementsToSerial) {
+		if ((periodFromLastSerial_us >= 1000000) && enableSendMeasurementsToSerial && !enableSendOscillogramToSerial) {
 			lastTimeSerial_us = curTime_us;
 			sendMeasurementsToSerial(accumVoltage, accumCapacity_AH, dischargeTime_s, loadCurrent);
 		}
 
 		if (enableSendOscillogramToSerial) {
-			float timeFromOscillogramStarted_s = (curTime_us - timeOscillogramStarted_us)  / 1000000.0;
-			sendOscillogramToSerial(timeFromOscillogramStarted_s, accumVoltage, loadCurrent, accumCapacity_AH);
+			uint16_t periodFromLastOscil_ms = (curTime_us - lastTimeSerial_us) / 1000;
+			if (periodFromLastOscil_ms >= oscilPeriod_ms) {
+				lastTimeSerial_us = curTime_us;
+				float timeFromOscillogramStarted_s = (curTime_us - timeOscillogramStarted_us)  / 1000000.0;
+				if (timeFromOscillogramStarted_s < 0) timeFromOscillogramStarted_s = 0; 
+				sendOscillogramToSerial(timeFromOscillogramStarted_s, accumVoltage, loadCurrent, accumCapacity_AH);
+			}
 		}
 		// sendTimeDebugInfoToSerial(F(" End_Loop ")); 
 
@@ -650,7 +658,7 @@ void printTableCaption(const __FlashStringHelper *msg) {
 
 void sendMeasurementsToSerial(float &Voltage, float &Capacity_AH, unsigned long &dischargeTime_s, float &Current) {
 	if (usbConnected && !enableSendOscillogramToSerial) {
-		Serial.print(Voltage); 
+		Serial.print(Voltage, 3); 
 		Serial.print(F("\t"));
 
 		Serial.print(Capacity_AH * 1000); 
@@ -743,6 +751,13 @@ void checkCommandsFromSerial() {
 			wantedDischargeCurrent = str.toFloat();
 			if (wantedDischargeCurrent < 0) wantedDischargeCurrent = 0;
 			if (wantedDischargeCurrent > maxDischargeCurrent) wantedDischargeCurrent = maxDischargeCurrent;
+		}
+
+		if (str.startsWith(F("set oscil period"))) {
+			str.remove(0, 16);
+			str.trim();
+			oscilPeriod_ms = str.toInt();
+			if (oscilPeriod_ms < 0) oscilPeriod_ms = 0;
 		}
 
 		if (str.startsWith(F("debug")))
