@@ -142,7 +142,7 @@ enum class DisplayMode: int8_t {
 	off
 };
 
-enum class SelectedActionOnMain: int8_t {
+enum class ClickAction: int8_t {
 	startDischarge,
 	setCurrent,
 	// measureRin,
@@ -151,7 +151,7 @@ enum class SelectedActionOnMain: int8_t {
 };
 
 DisplayMode displayMode;
-SelectedActionOnMain selectedActionOnMain;
+ClickAction clickAction;
 bool debugMode;
 // For scrolling log
 byte shiftFromHeader; 
@@ -160,6 +160,17 @@ unsigned long timeDischargeStopped;
 bool rewriteLastRecord;
 unsigned long timeOscillogramStarted_us;
 uint16_t oscilPeriod_ms;
+
+enum class MeasureRinStatus: int8_t {
+	notMeasured,
+	measuredVoltageStart,
+	measuredVoltageEnd
+};
+
+struct MeasureRin {
+	float voltageStart, voltageEnd, current;  
+	MeasureRinStatus status;
+} measureRin;
 
 void powerdownSleep() {
 	displayMode = DisplayMode::off;
@@ -195,6 +206,7 @@ void startStopDischarge(bool l_enableDischarge) {
 
 		threshholdVoltage = 4.5;
 		prevPwmValueForCurrent = 0;
+		measureRin.status = MeasureRinStatus::notMeasured;
 
 		printTableCaption(F("***Start Discharge***"));
 	} else
@@ -224,30 +236,30 @@ void loop() {
 		switch (displayMode) {
 			case DisplayMode::main:
 				if (encoder.isRight()) {
-					selectedActionOnMain = SelectedActionOnMain( byte(selectedActionOnMain) + 1);
-					if (selectedActionOnMain > SelectedActionOnMain::off) selectedActionOnMain = SelectedActionOnMain(0);
+					clickAction = ClickAction( byte(clickAction) + 1);
+					if (clickAction > ClickAction::off) clickAction = ClickAction(0);
 				}
 				if (encoder.isLeft()) {
-					selectedActionOnMain = SelectedActionOnMain( byte(selectedActionOnMain) - 1);
-					if (selectedActionOnMain < SelectedActionOnMain(0)) selectedActionOnMain = SelectedActionOnMain::off;
+					clickAction = ClickAction( byte(clickAction) - 1);
+					if (clickAction < ClickAction(0)) clickAction = ClickAction::off;
 				}
 				if (encoder.isClick()) {
-					switch (selectedActionOnMain) {
-						case SelectedActionOnMain::startDischarge:
+					switch (clickAction) {
+						case ClickAction::startDischarge:
 							startStopDischarge(!enableDischarge);
 							if (enableDischarge)
 								timeDischargeStarted = curTime_us;
 							break;
-						case SelectedActionOnMain::setCurrent:
+						case ClickAction::setCurrent:
 							displayMode = DisplayMode::setCurrent;
 							break;
-						// case SelectedActionOnMain::measureRin:
+						// case ClickAction::measureRin:
 						// 	displayMode = DisplayMode::measureRin;
 						// 	break;
-						case SelectedActionOnMain::viewLog:
+						case ClickAction::viewLog:
 							displayMode = DisplayMode::viewLog;
 							break;
-						case SelectedActionOnMain::off:
+						case ClickAction::off:
 							powerdownSleep();
 							break;
 					}
@@ -292,7 +304,7 @@ void loop() {
 					restoreAfterSleep();
 			break;
 		} 
-		if ((selectedActionOnMain == SelectedActionOnMain::setCurrent) && encoder.isHolded())
+		if ((clickAction == ClickAction::setCurrent) && encoder.isHolded())
 			debugMode = !debugMode;
 
 
@@ -338,6 +350,12 @@ void loop() {
 				.Capacity_AH = accumCapacity_AH, .dischargeTime_s = dischargeTime_s};
 
 			saveRecordToEEPROM(capacityRecord);
+
+			if (measureRin.status == MeasureRinStatus::measuredVoltageStart) {
+				measureRin.voltageEnd = accumVoltage;
+				measureRin.current = loadCurrent;
+				measureRin.status = MeasureRinStatus::measuredVoltageEnd;
+			}
 		}		
 
 		if (enableDischarge) {
@@ -390,6 +408,11 @@ void loop() {
 			rewriteLastRecord = false;
 
 			sendMeasurementsToSerial(accumVoltage, accumCapacity_AH, dischargeTime_s, loadCurrent);
+
+			if (measureRin.status == MeasureRinStatus::notMeasured) {
+				measureRin.voltageStart = accumVoltage;
+				measureRin.status = MeasureRinStatus::measuredVoltageStart;
+			}
 
 			// Next log when accum discharges more by 0.1V
 			threshholdVoltage = (round((accumVoltage - 0.1) * 10)) / 10.0;  
@@ -451,23 +474,23 @@ void loop() {
 					case DisplayMode::main:
 						// Draw button
 						display.setCursor(2, y);
-						switch (selectedActionOnMain) {
-							case SelectedActionOnMain::startDischarge:
+						switch (clickAction) {
+							case ClickAction::startDischarge:
 								if (enableDischarge)
 									display.print(F("Stop Discharge"));
 								else	 
 									display.print(F("Start Discharge"));
 							break;
 
-							case SelectedActionOnMain::setCurrent:
+							case ClickAction::setCurrent:
 								display.print(F("Set Discharge Current")); 
 							break; 
 
-							case SelectedActionOnMain::viewLog:
+							case ClickAction::viewLog:
 								drawLog(0); 
 							break;
 								
-							case SelectedActionOnMain::off:
+							case ClickAction::off:
 								display.print(F("Off")); 
 							break; 
 						}	
@@ -494,52 +517,60 @@ void loop() {
 					break;
 				}
 
-				if (selectedActionOnMain != SelectedActionOnMain::viewLog) {
-				// Offset of top yellow part of display (and minus baseline offset of font)
-				y = yellowHeaderHeight + charHeight - fontBaseline;
-				display.setCursor(0, y);
-				if (enableDischarge) {
-					display.print(F("Discharge")); 
+				if (clickAction != ClickAction::viewLog) {
+					// Offset of top yellow part of display (and minus baseline offset of font)
+					y = yellowHeaderHeight + charHeight - fontBaseline;
+					display.setCursor(0, y);
+					if (enableDischarge) {
+						display.print(F("Discharge")); 
 
-					display.setCursor(10*charWidth, y);
-					display.print(F("Cur       A")); 
-					display.setCursor(14*charWidth, y);
-					display.print(loadCurrent, 3); 		
-				}
+						display.setCursor(10*charWidth, y);
+						display.print(F("Cur       A")); 
+						display.setCursor(14*charWidth, y);
+						display.print(loadCurrent, 3); 		
+					}
 
-				constexpr byte spacingBetweenLines = 2; 
-				y += (charHeight + spacingBetweenLines);
-				display.setCursor(0, y);
-				display.print(F("Voltage        V")); 
-				display.setCursor(9*charWidth, y);
-				display.print(accumVoltage); 
-
-				if ((selectedActionOnMain == SelectedActionOnMain::setCurrent) && debugMode) {
-					char t[16];
-					sprintf_P(t, PSTR("sh%dmV %dmA uC%dmA"), int(shuntVoltage * 1000), int(accumCurrent * 1000), 
-						int(microcontrollerCurrent * 1000));
+					constexpr byte spacingBetweenLines = 2; 
 					y += (charHeight + spacingBetweenLines);
 					display.setCursor(0, y);
-					display.print(t);
-					
-					sprintf_P(t, PSTR("ac%dmV PWM %d"), int(accumVoltageDivided * 1000), prevPwmValueForCurrent);
-					y += (charHeight + spacingBetweenLines);
-					display.setCursor(0, y);
-					display.print(t);
-				} else {
-					y += (charHeight + spacingBetweenLines);
-					display.setCursor(0, y);
-					display.print(F("Capacity          mAh"));
+					display.print(F("Voltage       V")); 
 					display.setCursor(9*charWidth, y);
-					display.print(accumCapacity_AH * 1000);
+					display.print(accumVoltage); 
 
-					unsigned long time_s = dischargeTime_s;
+					if (measureRin.status == MeasureRinStatus::measuredVoltageEnd) {
+						float Rin = (measureRin.voltageStart - measureRin.voltageEnd) / measureRin.current;
 
-					y += (charHeight + spacingBetweenLines);
-					display.setCursor(0, y);
-					display.print(F("Time"));
-					printTime(time_s, 50, y);
-				}
+						display.setCursor(17*charWidth, y);
+						display.print(Rin); 
+					}
+
+
+					if ((clickAction == ClickAction::setCurrent) && debugMode) {
+						char t[16];
+						sprintf_P(t, PSTR("sh%dmV %dmA uC%dmA"), int(shuntVoltage * 1000), int(accumCurrent * 1000), 
+							int(microcontrollerCurrent * 1000));
+						y += (charHeight + spacingBetweenLines);
+						display.setCursor(0, y);
+						display.print(t);
+						
+						sprintf_P(t, PSTR("ac%dmV PWM %d"), int(accumVoltageDivided * 1000), prevPwmValueForCurrent);
+						y += (charHeight + spacingBetweenLines);
+						display.setCursor(0, y);
+						display.print(t);
+					} else {
+						y += (charHeight + spacingBetweenLines);
+						display.setCursor(0, y);
+						display.print(F("Capacity          mAh"));
+						display.setCursor(9*charWidth, y);
+						display.print(accumCapacity_AH * 1000);
+
+						unsigned long time_s = dischargeTime_s;
+
+						y += (charHeight + spacingBetweenLines);
+						display.setCursor(0, y);
+						display.print(F("Time"));
+						printTime(time_s, 50, y);
+					}
 				}
 				encoder.tick();
 				if (encoder.isTurn()) break;
