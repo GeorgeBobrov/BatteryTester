@@ -79,7 +79,7 @@ void setup() {
 	// mode = EEPROM.read(0);
 
 	display.begin();
-	// display.setFontPosBottom(); // and don't mess around with fontBaseline
+	display.setFontPosBottom(); // to eliminate correction y by fontBaseline when printing text on display every time
 
 
 	attachInterrupt(0, isrCLK, CHANGE);
@@ -129,12 +129,11 @@ constexpr byte offssetOfRecords = 4;
 
 constexpr byte charWidth = 6;
 constexpr byte charHeight = 10;
-constexpr byte fontBaseline = 3;
 constexpr byte yellowHeaderHeight = 16;
 // 63 (scrrenHeight) - 16 (tableHeaderHeight) = 48
 // 48 / charHeight (10) = 4.8, round up to 5 
 constexpr byte linesOfLogOnScreen = 5; 
-constexpr byte additionalSpacingForFirstLine = 3;
+constexpr byte additionalSpacingForFirstLine = 2;
 
 enum class DisplayMode: int8_t {
 	main,
@@ -469,13 +468,15 @@ void loop() {
 				if (encoder.isTurn()) break;
 
 				display.setFont(u8g2_font_6x10_tf); 
-				byte y = charHeight - fontBaseline + additionalSpacingForFirstLine;
+				byte y = charHeight + additionalSpacingForFirstLine;
+				byte x = 0;
 
 				switch (displayMode) {
 
 					case DisplayMode::main:
 						// Draw button
-						display.setCursor(2, y);
+						x = 2;
+						display.setCursor(x, y);
 						switch (clickAction) {
 							case ClickAction::startDischarge:
 								if (enableDischarge)
@@ -496,7 +497,7 @@ void loop() {
 								display.print(F("Off")); 
 							break; 
 						}	
-						display.drawFrame(0, y-9, displayWidth, 13);
+						display.drawFrame(x - 2, y - charHeight - 1, displayWidth, charHeight + 3);
 					break;
 					
 					case DisplayMode::viewLog:
@@ -511,22 +512,22 @@ void loop() {
 						display.setCursor(8*charWidth, y);
 						display.print(wantedDischargeCurrent, 3); 
 
-						byte x = displayWidth - 3*charWidth - 3;
+						x = displayWidth - 3*charWidth - 3;
 						display.setCursor(x, y);
 						display.print(F("Set")); 
 
-						display.drawFrame(x - 2, y-9, 3*charWidth + 4, 13);
+						display.drawFrame(x - 2, y - charHeight - 1, 3*charWidth + 4, charHeight + 3);
 					break;
 				}
 
 				if (clickAction != ClickAction::viewLog) {
 					// Offset of top yellow part of display (and minus baseline offset of font)
 					byte y_line = yellowHeaderHeight;
-					y = yellowHeaderHeight + charHeight - fontBaseline;
+					y = yellowHeaderHeight + charHeight;
 					#define spacingBetweenLines 2 
 					byte y2 = y + (charHeight + spacingBetweenLines);
 
-					byte x = 0;
+					x = 0;
 					display.setCursor(x, y);
 					display.print(F("Voltage")); 
 
@@ -566,11 +567,10 @@ void loop() {
 					}
 
 					y = y2;
-					#define spacingBetweenLines 3
-					y += spacingBetweenLines;
-					display.drawHLine(0, y, displayWidth);
+					display.drawHLine(0, y + 1, displayWidth);
 
-					y += (charHeight + 1/*HLine*/);
+					#define spacingBetweenLines 3
+					y += (charHeight + spacingBetweenLines + 1/*HLine*/);
 
 					if ((clickAction == ClickAction::setCurrent) && debugMode) {
 						char t[16];
@@ -590,12 +590,11 @@ void loop() {
 						display.setCursor(9*charWidth, y);
 						display.print(accumCapacity_AH * 1000);
 
-						y += spacingBetweenLines;
-						display.drawHLine(0, y, displayWidth);
+						display.drawHLine(0, y + 1, displayWidth);
 
 						unsigned long time_s = dischargeTime_s;
 
-						y += (charHeight + 1/*HLine*/);
+						y += (charHeight + spacingBetweenLines + 1/*HLine*/);
 						display.setCursor(0, y);
 						display.print(F("Time"));
 						printTime(time_s, 50, y);
@@ -646,7 +645,7 @@ void printTime(unsigned long time_s, byte startXpos, byte startYpos) {
 }
 
 void drawOneLogLine(byte lineNum, AccumCapacityRecord &capacityRecord) {
-	byte y = yellowHeaderHeight + (charHeight * lineNum) - fontBaseline;
+	byte y = yellowHeaderHeight + (charHeight * lineNum);
 	display.setCursor(0, y);
 	// 0.00 (4 chars) 
 	display.print(capacityRecord.Voltage); 
@@ -666,11 +665,11 @@ void drawOneLogLine(byte lineNum, AccumCapacityRecord &capacityRecord) {
 	display.setCursor(18*charWidth, y);
 	display.print(capacityRecord.Current * 1000, 0);
 
-	display.drawHLine(0, y + 1, displayWidth);
+	display.drawHLine(0, y - 1, displayWidth);
 }
 
 void drawLog(byte shiftFromHeader) {
-	byte y = charHeight - fontBaseline + additionalSpacingForFirstLine;
+	byte y = charHeight + additionalSpacingForFirstLine;
 	display.setCursor(2, y);
 	display.print(F("Volt")); 
 
@@ -683,7 +682,7 @@ void drawLog(byte shiftFromHeader) {
 	display.setCursor(18*charWidth, y);
 	display.print(F("mA")); 	
 
-	display.drawHLine(0, 14, displayWidth);
+	display.drawHLine(0, y + 2, displayWidth);
 
 	display.drawVLine(4*charWidth + 3, 0, 64);
 	display.drawVLine(9*charWidth + 3, 0, 64);
