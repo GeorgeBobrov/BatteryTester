@@ -22,10 +22,11 @@ constexpr float Rup = 80500.0;
 constexpr float Rdown = 20100.0;
 constexpr float resistorDividerCoef = (Rup + Rdown) / Rdown;
 
-constexpr float stopDischargeVoltage = 3.0;
+float stopDischargeVoltage = 3.0;
 constexpr float currentShuntResistance = 1.01;
 float wantedDischargeCurrent = 0.1; // Initial value 
 constexpr float maxDischargeCurrent = 1; 
+constexpr float maxVoltage = 5.0; 
 
 constexpr int16_t MAX_ADC_VALUE = bit(10) - 1;
 // Use GyverPWM library, 10 bit PWM (PWM_16KHZ_D9 function)
@@ -138,6 +139,7 @@ constexpr byte additionalSpacingForFirstLine = 2;
 enum class DisplayMode: int8_t {
 	main,
 	setCurrent,
+	setDischargeVoltage,
 	// measureRin,
 	viewLog,
 	off
@@ -146,6 +148,7 @@ enum class DisplayMode: int8_t {
 enum class ClickAction: int8_t {
 	startDischarge,
 	setCurrent,
+	setDischargeVoltage,
 	// measureRin,
 	viewLog,
 	off
@@ -205,7 +208,7 @@ void startStopDischarge(bool l_enableDischarge) {
 		// tone(LED_BUILTIN, 2000, 500);
 		// tone(LED_BUILTIN, 2, 2000);
 
-		threshholdVoltage = 4.5;
+		threshholdVoltage = maxVoltage;
 		prevPwmValueForCurrent = 0;
 		measureRin.status = MeasureRinStatus::notMeasured;
 
@@ -254,6 +257,9 @@ void loop() {
 						case ClickAction::setCurrent:
 							displayMode = DisplayMode::setCurrent;
 							break;
+						case ClickAction::setDischargeVoltage:
+							displayMode = DisplayMode::setDischargeVoltage;
+							break;
 						// case ClickAction::measureRin:
 						// 	displayMode = DisplayMode::measureRin;
 						// 	break;
@@ -277,6 +283,22 @@ void loop() {
 				if (encoder.isLeft()) {
 					wantedDischargeCurrent -= 0.05; 
 					if (wantedDischargeCurrent < 0) wantedDischargeCurrent = 0;
+					prevPwmValueForCurrent = 0;
+				}
+				if (encoder.isClick())
+					displayMode = DisplayMode::main;
+			break;
+				
+			case DisplayMode::setDischargeVoltage:
+				if (encoder.isRight()) {
+					stopDischargeVoltage += 0.1;
+					if (stopDischargeVoltage > maxVoltage) 
+						stopDischargeVoltage = maxVoltage;
+					prevPwmValueForCurrent = 0;
+				}
+				if (encoder.isLeft()) {
+					stopDischargeVoltage -= 0.1; 
+					if (stopDischargeVoltage < 0) stopDischargeVoltage = 0;
 					prevPwmValueForCurrent = 0;
 				}
 				if (encoder.isClick())
@@ -489,6 +511,10 @@ void loop() {
 								display.print(F("Set Discharge Current")); 
 							break; 
 
+							case ClickAction::setDischargeVoltage:
+								display.print(F("Set Stop Voltage")); 
+							break; 
+
 							case ClickAction::viewLog:
 								drawLog(0); 
 							break;
@@ -507,10 +533,25 @@ void loop() {
 					case DisplayMode::setCurrent:
 						display.setCursor(0, y);
 
-						display.print(F("Current       A")); 
+						display.print(F("Dsc Cur:       A")); 
 
-						display.setCursor(8*charWidth, y);
+						display.setCursor(9*charWidth, y);
 						display.print(wantedDischargeCurrent, 3); 
+
+						x = displayWidth - 3*charWidth - 3;
+						display.setCursor(x, y);
+						display.print(F("Set")); 
+
+						display.drawFrame(x - 2, y - charHeight - 1, 3*charWidth + 4, charHeight + 3);
+					break;
+
+					case DisplayMode::setDischargeVoltage:
+						display.setCursor(0, y);
+
+						display.print(F("Stop Volt:      V")); 
+
+						display.setCursor(11*charWidth, y);
+						display.print(stopDischargeVoltage); 
 
 						x = displayWidth - 3*charWidth - 3;
 						display.setCursor(x, y);
