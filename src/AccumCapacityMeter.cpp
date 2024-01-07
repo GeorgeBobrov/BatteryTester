@@ -36,6 +36,23 @@ constexpr int16_t MAX_PWM_VALUE = bit(10) - 1;
 Encoder encoder(pinEnc1, pinEnc2, pinEncButton); 
 U8G2_SSD1306_128X64_NONAME_2_HW_I2C display(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 constexpr byte displayWidth = 128;
+constexpr byte displayHeight = 64;
+
+// Variables created by the build process
+// when the sketch is compiled
+// extern int __bss_end;
+// extern void *__brkval;
+ 
+// Function that returns the amount of free RAM
+// int getSizeFreeRam()
+// {
+//    int freeValue;
+//    if((int)__brkval == 0)
+//       freeValue = ((int)&freeValue) - ((int)&__bss_end);
+//    else
+//       freeValue = ((int)&freeValue) - ((int)__brkval);
+//    return freeValue;
+// }
 
 void isrCLK() {
 	encoder.tick();
@@ -113,7 +130,7 @@ void sendMeasurementsToSerial(float &Voltage, float &Capacity_AH, unsigned long 
 void sendOscillogramToSerial(float &Time_s, float &Voltage, float &Current, float &Capacity_AH);
 // void printTableCaption(const char * msg);
 void printTableCaption(const __FlashStringHelper *ifsh);
-void drawLog(byte shiftFromHeader, bool drawHeader = true);
+void drawLog(byte shiftFromLastRec, bool drawHeader = true);
 void checkCommandsFromSerial();
 // void sendTimeDebugInfoToSerial(const __FlashStringHelper *msg, byte marker = 0);
 
@@ -128,15 +145,17 @@ void saveRecordToEEPROM(AccumCapacityRecord &capacityRecord, bool rewriteLastRec
 
 // need to to add "constexpr" in EEPROM.h in this line:
 //    constexpr uint16_t length()                    { return E2END + 1; }
-constexpr byte recordsInEEPROM = (EEPROM.length() / sizeof(AccumCapacityRecord)) - 1;
-constexpr byte offssetOfRecords = 4;
+constexpr byte numOfRecordsInEEPROM = (EEPROM.length() / sizeof(AccumCapacityRecord)) - 1;
+constexpr byte offssetOfLogRecordsInEEPROM = 4; // for storing indexOfLastRecordInEEPROM
 
 constexpr byte charWidth = 6;
 constexpr byte charHeight = 10;
 constexpr byte yellowHeaderHeight = 16;
-// 63 (scrrenHeight) - 16 (tableHeaderHeight) = 48
+constexpr byte tableHeaderHeight = yellowHeaderHeight;
+constexpr byte tableHeight = displayHeight - tableHeaderHeight;
+// 64 (displayHeight) - 16 (tableHeaderHeight) = 48
 // 48 / charHeight (10) = 4.8, round up to 5 
-constexpr byte linesOfLogOnScreen = 5; 
+constexpr byte linesOfLogOnScreen = round(float(tableHeight) / charHeight); 
 constexpr byte additionalSpacingForFirstLine = 2;
 
 enum class DisplayMode: byte {
@@ -161,7 +180,7 @@ DisplayMode displayMode;
 ClickAction clickAction;
 bool debugMode;
 // For scrolling log
-byte shiftFromHeader; 
+byte shiftFromLastRec; 
 unsigned long timeDischargeStarted;
 unsigned long timeDischargeStopped;
 bool rewriteLastRecord;
@@ -333,16 +352,16 @@ void loop() {
 
 			case DisplayMode::viewLog:
 				if (encoder.isLeft()) {
-					if (shiftFromHeader < recordsInEEPROM - linesOfLogOnScreen) 
-						shiftFromHeader++;
+					if (shiftFromLastRec < numOfRecordsInEEPROM - linesOfLogOnScreen) 
+						shiftFromLastRec++;
 				}
 				if (encoder.isRight()) {
-					if (shiftFromHeader > 0)
-						shiftFromHeader--; 
+					if (shiftFromLastRec > 0)
+						shiftFromLastRec--; 
 				}
 				if (encoder.isClick()) {
 					displayMode = DisplayMode::main;
-					shiftFromHeader = 0;
+					shiftFromLastRec = 0;
 				}
 			break;
 
@@ -555,7 +574,7 @@ void loop() {
 				} 
 				
 				if (displayMode == DisplayMode::viewLog)
-					drawLog(shiftFromHeader); 
+					drawLog(shiftFromLastRec); 
 
 				if ((displayMode == DisplayMode::setCurrent) || 
 					((displayMode == DisplayMode::main) && (clickAction == ClickAction::setCurrent))) {
@@ -614,10 +633,12 @@ void loop() {
 					byte y2 = y + (charHeight + /*spacingBetweenLines*/2);
 
 					display.setCursor(x, y);
+					// display.print(F("FreeRAM")); 
 					display.print(F("Voltage")); 
 
 					display.setCursor(x, y2);
 					display.print(accumVoltage); 
+					// display.print(getSizeFreeRam()); 
 					
 					display.setCursor(x + 6*charWidth, y2);
 					display.print(F("V")); 
@@ -752,7 +773,7 @@ void drawOneLogLine(byte lineNum, AccumCapacityRecord &capacityRecord) {
 	display.drawHLine(0, y - 1, displayWidth);
 }
 
-void drawLog(byte shiftFromHeader, bool drawHeader) {
+void drawLog(byte shiftFromLastRec, bool drawHeader) {
 	//add scroll bar
 	byte y = charHeight + additionalSpacingForFirstLine;
 
@@ -772,22 +793,28 @@ void drawLog(byte shiftFromHeader, bool drawHeader) {
 
 	display.drawHLine(0, y + 2, displayWidth);
 
-	display.drawVLine(4*charWidth + 3, 0, 64);
-	display.drawVLine(9*charWidth + 3, 0, 64);
-	display.drawVLine(17*charWidth + 3, 0, 64);
+	display.drawVLine(4*charWidth + 3, 0, displayHeight);
+	display.drawVLine(9*charWidth + 3, 0, displayHeight);
+	display.drawVLine(17*charWidth + 3, 0, displayHeight);
 
-	AccumCapacityRecord capacityRecord;
-
-	byte recordsHead = EEPROM[0];
+	byte indexOfLastRecordInEEPROM = EEPROM[0];
 
 	for (byte lineIndex = 1; lineIndex <= linesOfLogOnScreen; lineIndex++) {
-		byte ri = (lineIndex + recordsHead + recordsInEEPROM - shiftFromHeader - linesOfLogOnScreen) % recordsInEEPROM;
+		byte ri = (lineIndex + indexOfLastRecordInEEPROM + numOfRecordsInEEPROM - shiftFromLastRec - linesOfLogOnScreen) % numOfRecordsInEEPROM;
 
-		EEPROM.get(offssetOfRecords + ri * sizeof(AccumCapacityRecord), capacityRecord);
+		AccumCapacityRecord capacityRecord;
+		EEPROM.get(offssetOfLogRecordsInEEPROM + ri * sizeof(AccumCapacityRecord), capacityRecord);
 
 		drawOneLogLine(lineIndex, capacityRecord);
 	}
 
+	float yEndScrollMarker = (float(numOfRecordsInEEPROM - shiftFromLastRec) / numOfRecordsInEEPROM) * tableHeight;
+	float yStartScrollMarker = (float(numOfRecordsInEEPROM - shiftFromLastRec - linesOfLogOnScreen) / numOfRecordsInEEPROM) * tableHeight;
+
+	byte yScrollMarker = tableHeaderHeight + round(yStartScrollMarker); 
+	byte scrollMarkerHeight = round(yEndScrollMarker) - round(yStartScrollMarker); 
+
+	display.drawVLine(displayWidth - 1, yScrollMarker, scrollMarkerHeight);
 }
 
 
@@ -852,13 +879,13 @@ void sendOscillogramToSerial(float &Time_s, float &Voltage, float &Current, floa
 // }
 
 void saveRecordToEEPROM(AccumCapacityRecord &capacityRecord, bool rewriteLastRecord/* = false*/) {
-	byte recordsHead = EEPROM[0];
+	byte indexOfLastRecordInEEPROM = EEPROM[0];
 	if (!rewriteLastRecord) {
-		recordsHead = (recordsHead + 1) % recordsInEEPROM;
-		EEPROM[0] = recordsHead;
+		indexOfLastRecordInEEPROM = (indexOfLastRecordInEEPROM + 1) % numOfRecordsInEEPROM;
+		EEPROM[0] = indexOfLastRecordInEEPROM;
 	}	
 
-	EEPROM.put(offssetOfRecords + recordsHead * sizeof(AccumCapacityRecord), capacityRecord);
+	EEPROM.put(offssetOfLogRecordsInEEPROM + indexOfLastRecordInEEPROM * sizeof(AccumCapacityRecord), capacityRecord);
 }
 
 void checkCommandsFromSerial() {
@@ -873,16 +900,16 @@ void checkCommandsFromSerial() {
 		}
 
 		if (str == F("log")) {
-			AccumCapacityRecord capacityRecord;
 
-			byte recordsHead = EEPROM[0];
+			byte indexOfLastRecordInEEPROM = EEPROM[0];
 
 			printTableCaption(F("***Log***"));	
 
-			for (byte i = 0; i < recordsInEEPROM; i++) {
-				byte ri = (i + recordsHead + 1) % recordsInEEPROM;
+			for (byte i = 0; i < numOfRecordsInEEPROM; i++) {
+				byte ri = (i + indexOfLastRecordInEEPROM + 1) % numOfRecordsInEEPROM;
 
-				EEPROM.get(offssetOfRecords + ri * sizeof(AccumCapacityRecord), capacityRecord);
+				AccumCapacityRecord capacityRecord;
+				EEPROM.get(offssetOfLogRecordsInEEPROM + ri * sizeof(AccumCapacityRecord), capacityRecord);
 
 				sendMeasurementsToSerial(capacityRecord.Voltage, capacityRecord.Capacity_AH, 
 					capacityRecord.dischargeTime_s, capacityRecord.Current);
