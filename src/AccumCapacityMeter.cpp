@@ -22,8 +22,8 @@ constexpr float Rup = 80500.0;
 constexpr float Rdown = 20100.0;
 constexpr float resistorDividerCoef = (Rup + Rdown) / Rdown;
 
+constexpr float currentShuntResistance = 0.99;
 float stopDischargeVoltage = 3.0;
-constexpr float currentShuntResistance = 1.01;
 float wantedDischargeCurrent = 0.1; // Initial value 
 constexpr float maxDischargeCurrent = 1; 
 constexpr float maxVoltage = 5.0; 
@@ -164,6 +164,7 @@ unsigned long timeDischargeStopped;
 bool rewriteLastRecord;
 unsigned long timeOscillogramStarted_us;
 uint16_t oscilPeriod_ms;
+float accumVoltage;
 
 enum class MeasureRinStatus: int8_t {
 	notMeasured,
@@ -250,25 +251,31 @@ void loop() {
 				if (encoder.isClick()) {
 					switch (clickAction) {
 						case ClickAction::startDischarge:
+							if (!enableDischarge) // going to start discharge
+								if (accumVoltage < stopDischargeVoltage) {
+									displayMode = DisplayMode::setDischargeVoltage;
+									break;
+								}	
+						
 							startStopDischarge(!enableDischarge);
 							if (enableDischarge)
 								timeDischargeStarted = curTime_us;
-							break;
+						break;
 						case ClickAction::setCurrent:
 							displayMode = DisplayMode::setCurrent;
-							break;
+						break;
 						case ClickAction::setDischargeVoltage:
 							displayMode = DisplayMode::setDischargeVoltage;
-							break;
+						break;
 						// case ClickAction::measureRin:
 						// 	displayMode = DisplayMode::measureRin;
 						// 	break;
 						case ClickAction::viewLog:
 							displayMode = DisplayMode::viewLog;
-							break;
+						break;
 						case ClickAction::off:
 							powerdownSleep();
-							break;
+						break;
 					}
 				}
 			break;
@@ -298,7 +305,9 @@ void loop() {
 				}
 				if (encoder.isLeft()) {
 					stopDischargeVoltage -= 0.1; 
-					if (stopDischargeVoltage < 0) stopDischargeVoltage = 0;
+					// accumVoltage can't reach 0V since schottky diode reverse current leakage
+					// (bad feature of the electrical circuit)
+					if (stopDischargeVoltage < 0.1) stopDischargeVoltage = 0.1;
 					prevPwmValueForCurrent = 0;
 				}
 				if (encoder.isClick())
@@ -343,7 +352,7 @@ void loop() {
 		float accumVoltageADC = float(voltAdcSum) / averCount;
 
 		constexpr float UsbVoltage = 5.0;
-		float accumVoltage = (accumVoltageADC / MAX_ADC_VALUE) * resistorDividerCoef * internalReferenceVoltage;
+		accumVoltage = (accumVoltageADC / MAX_ADC_VALUE) * resistorDividerCoef * internalReferenceVoltage;
 		float microcontrollerVoltage = accumVoltage;
 
 		// Internal reference voltage in fact depends on supply voltage (this was measured and dependency identified)
@@ -565,8 +574,7 @@ void loop() {
 					// Offset of top yellow part of display (and minus baseline offset of font)
 					byte y_line = yellowHeaderHeight;
 					y = yellowHeaderHeight + charHeight;
-					#define spacingBetweenLines 2 
-					byte y2 = y + (charHeight + spacingBetweenLines);
+					byte y2 = y + (charHeight + /*spacingBetweenLines*/2);
 
 					x = 0;
 					display.setCursor(x, y);
@@ -610,18 +618,17 @@ void loop() {
 					y = y2;
 					display.drawHLine(0, y + 1, displayWidth);
 
-					#define spacingBetweenLines 3
-					y += (charHeight + spacingBetweenLines + 1/*HLine*/);
+					y += (charHeight + /*spacingBetweenLines*/3 + /*HLine*/1);
 
 					if ((clickAction == ClickAction::setCurrent) && debugMode) {
-						char t[16];
-						sprintf_P(t, PSTR("sh%dmV %dmA uC%dmA"), int(shuntVoltage * 1000), int(accumCurrent * 1000), 
-							int(microcontrollerCurrent * 1000));
+						char t[21];
+						sprintf_P(t, PSTR("C %dmV %d+%dmA %dref"), int(shuntVoltage * 1000), int(accumCurrent * 1000), 
+							int(microcontrollerCurrent * 1000), int(referenceVoltageCorrected * 1000));
 						display.setCursor(0, y);
 						display.print(t);
 						
-						sprintf_P(t, PSTR("ac%dmV PWM %d"), int(accumVoltageDivided * 1000), prevPwmValueForCurrent);
-						y += (charHeight + spacingBetweenLines);
+						sprintf_P(t, PSTR("V %dmV PWM %d"), int(accumVoltageDivided * 1000), prevPwmValueForCurrent);
+						y += (charHeight + /*spacingBetweenLines*/3);
 						display.setCursor(0, y);
 						display.print(t);
 					} else {
@@ -635,7 +642,7 @@ void loop() {
 
 						unsigned long time_s = dischargeTime_s;
 
-						y += (charHeight + spacingBetweenLines + 1/*HLine*/);
+						y += (charHeight + /*spacingBetweenLines*/3 + /*HLine*/1);
 						display.setCursor(0, y);
 						display.print(F("Time"));
 						printTime(time_s, 50, y);
