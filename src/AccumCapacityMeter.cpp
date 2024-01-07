@@ -45,6 +45,8 @@ void isrDT() {
 	encoder.tick();
 }
 
+unsigned long timeShowDescription;
+
 void setup() {
 	//set board_build.f_cpu = 8000000L in platformio.ini and 
 	//divide real freq 16000000 by 2 by SystemPrescaler (for working on low voltages)
@@ -82,6 +84,7 @@ void setup() {
 	display.begin();
 	display.setFontPosBottom(); // to eliminate correction y by fontBaseline when printing text on display every time
 
+	timeShowDescription = micros() + 3000000;
 
 	attachInterrupt(0, isrCLK, CHANGE);
 	attachInterrupt(1, isrDT, CHANGE);
@@ -110,7 +113,7 @@ void sendMeasurementsToSerial(float &Voltage, float &Capacity_AH, unsigned long 
 void sendOscillogramToSerial(float &Time_s, float &Voltage, float &Current, float &Capacity_AH);
 // void printTableCaption(const char * msg);
 void printTableCaption(const __FlashStringHelper *ifsh);
-void drawLog(byte shiftFromHeader);
+void drawLog(byte shiftFromHeader, bool drawHeader = true);
 void checkCommandsFromSerial();
 // void sendTimeDebugInfoToSerial(const __FlashStringHelper *msg, byte marker = 0);
 
@@ -136,7 +139,7 @@ constexpr byte yellowHeaderHeight = 16;
 constexpr byte linesOfLogOnScreen = 5; 
 constexpr byte additionalSpacingForFirstLine = 2;
 
-enum class DisplayMode: int8_t {
+enum class DisplayMode: byte {
 	main,
 	setCurrent,
 	setDischargeVoltage,
@@ -145,7 +148,7 @@ enum class DisplayMode: int8_t {
 	off
 };
 
-enum class ClickAction: int8_t {
+enum class ClickAction: byte {
 	startDischarge,
 	setCurrent,
 	setDischargeVoltage,
@@ -166,7 +169,7 @@ unsigned long timeOscillogramStarted_us;
 uint16_t oscilPeriod_ms;
 float accumVoltage;
 
-enum class MeasureRinStatus: int8_t {
+enum class MeasureRinStatus: byte {
 	notMeasured,
 	measuredVoltageStart,
 	measuredVoltageEnd
@@ -241,13 +244,27 @@ void loop() {
 		switch (displayMode) {
 			case DisplayMode::main:
 				if (encoder.isRight()) {
-					clickAction = ClickAction( byte(clickAction) + 1);
-					if (clickAction > ClickAction::off) clickAction = ClickAction(0);
+					if (clickAction == ClickAction::off)
+						clickAction = ClickAction(0);
+					else	
+						clickAction = ClickAction( byte(clickAction) + 1);
+					 
+					timeShowDescription = curTime_us + 1000000;
+					if (clickAction == ClickAction::startDischarge)
+						timeShowDescription = curTime_us;
 				}
+
 				if (encoder.isLeft()) {
-					clickAction = ClickAction( byte(clickAction) - 1);
-					if (clickAction < ClickAction(0)) clickAction = ClickAction::off;
+					if (clickAction == ClickAction(0)) 
+						clickAction = ClickAction::off;
+					else	
+						clickAction = ClickAction( byte(clickAction) - 1);
+					
+					timeShowDescription = curTime_us + 1000000;
+					if (clickAction == ClickAction::startDischarge)
+						timeShowDescription = curTime_us;
 				}
+
 				if (encoder.isClick()) {
 					switch (clickAction) {
 						case ClickAction::startDischarge:
@@ -502,81 +519,100 @@ void loop() {
 				byte y = charHeight + additionalSpacingForFirstLine;
 				byte x = 0;
 
-				switch (displayMode) {
 
-					case DisplayMode::main:
-						// Draw button
-						x = 2;
-						display.setCursor(x, y);
-						switch (clickAction) {
-							case ClickAction::startDischarge:
-								if (enableDischarge)
-									display.print(F("Stop Discharge"));
-								else	 
-									display.print(F("Start Discharge"));
-							break;
+				if (displayMode == DisplayMode::main) {
+					// Draw button
+					x = 2;
+					display.setCursor(x, y);
 
-							case ClickAction::setCurrent:
-								display.print(F("Set Discharge Current")); 
-							break; 
+					if (clickAction == ClickAction::startDischarge) {
+						bool showDescription = (curTime_us < timeShowDescription);
+						if (showDescription)
+							display.print(F("Battery tester"));
+						else {
+							if (enableDischarge)
+								display.print(F("Stop Discharge"));
+							else	 
+								display.print(F("Start Discharge"));
 
-							case ClickAction::setDischargeVoltage:
-								display.print(F("Set Stop Voltage")); 
-							break; 
-
-							case ClickAction::viewLog:
-								drawLog(0); 
-							break;
-								
-							case ClickAction::off:
-								display.print(F("Off")); 
-							break; 
+							display.drawFrame(x - 2, y - charHeight - 1, displayWidth, charHeight + 3);
 						}	
+					}
+
+					if (clickAction == ClickAction::viewLog) {
+						bool showDescription = (curTime_us < timeShowDescription);
+						if (showDescription)
+							display.print(F("Log"));
+						drawLog(0, !showDescription); 
 						display.drawFrame(x - 2, y - charHeight - 1, displayWidth, charHeight + 3);
-					break;
-					
-					case DisplayMode::viewLog:
-						drawLog(shiftFromHeader); 
-					break;
 
-					case DisplayMode::setCurrent:
-						display.setCursor(0, y);
+					}
+						
+					if (clickAction == ClickAction::off) {
+						display.print(F("Sleep")); 
+						display.drawFrame(x - 2, y - charHeight - 1, displayWidth, charHeight + 3);
+					}
+				} 
+				
+				if (displayMode == DisplayMode::viewLog)
+					drawLog(shiftFromHeader); 
 
+				if ((displayMode == DisplayMode::setCurrent) || 
+					((displayMode == DisplayMode::main) && (clickAction == ClickAction::setCurrent))) {
+					display.setCursor(0, y);
+
+					bool showDescription = (curTime_us < timeShowDescription);
+					if ((displayMode == DisplayMode::main) && showDescription)
+						display.print(F("Discharge Current"));
+					else {	
 						display.print(F("Dsc Cur:       A")); 
 
 						display.setCursor(9*charWidth, y);
 						display.print(wantedDischargeCurrent, 3); 
+					}
 
-						x = displayWidth - 3*charWidth - 3;
-						display.setCursor(x, y);
+					x = displayWidth - 3*charWidth - 3;
+					display.setCursor(x, y);
+					if (displayMode == DisplayMode::setCurrent)
+						display.print(F("OK")); 
+					else	
 						display.print(F("Set")); 
 
-						display.drawFrame(x - 2, y - charHeight - 1, 3*charWidth + 4, charHeight + 3);
-					break;
+					display.drawFrame(x - 2, y - charHeight - 1, 3*charWidth + 4, charHeight + 3);
+				}
 
-					case DisplayMode::setDischargeVoltage:
-						display.setCursor(0, y);
+				if ((displayMode == DisplayMode::setDischargeVoltage) || 
+					((displayMode == DisplayMode::main) && (clickAction == ClickAction::setDischargeVoltage))) {
+					display.setCursor(0, y);
 
+					bool showDescription = (curTime_us < timeShowDescription);
+					if ((displayMode == DisplayMode::main) && showDescription)
+						display.print(F("Stop Voltage"));
+					else {	
 						display.print(F("Stop Volt:      V")); 
 
 						display.setCursor(11*charWidth, y);
 						display.print(stopDischargeVoltage); 
+					}
 
-						x = displayWidth - 3*charWidth - 3;
-						display.setCursor(x, y);
+					x = displayWidth - 3*charWidth - 3;
+					display.setCursor(x, y);
+					if (displayMode == DisplayMode::setDischargeVoltage)
+						display.print(F("OK")); 
+					else	
 						display.print(F("Set")); 
 
-						display.drawFrame(x - 2, y - charHeight - 1, 3*charWidth + 4, charHeight + 3);
-					break;
+					display.drawFrame(x - 2, y - charHeight - 1, 3*charWidth + 4, charHeight + 3);
 				}
 
 				if (clickAction != ClickAction::viewLog) {
 					// Offset of top yellow part of display (and minus baseline offset of font)
-					byte y_line = yellowHeaderHeight;
 					y = yellowHeaderHeight + charHeight;
+					x = 0;
+
+					byte y_line = y - charHeight;
 					byte y2 = y + (charHeight + /*spacingBetweenLines*/2);
 
-					x = 0;
 					display.setCursor(x, y);
 					display.print(F("Voltage")); 
 
@@ -716,19 +752,23 @@ void drawOneLogLine(byte lineNum, AccumCapacityRecord &capacityRecord) {
 	display.drawHLine(0, y - 1, displayWidth);
 }
 
-void drawLog(byte shiftFromHeader) {
+void drawLog(byte shiftFromHeader, bool drawHeader) {
+	//add scroll bar
 	byte y = charHeight + additionalSpacingForFirstLine;
-	display.setCursor(2, y);
-	display.print(F("Volt")); 
 
-	display.setCursor(5*charWidth, y);
-	display.print(F("mAH")); 
+	if (drawHeader) {
+		display.setCursor(2, y);
+		display.print(F("Volt")); 
 
-	display.setCursor(10*charWidth, y);
-	display.print(F("Time")); 
+		display.setCursor(5*charWidth, y);
+		display.print(F("mAH")); 
 
-	display.setCursor(18*charWidth, y);
-	display.print(F("mA")); 	
+		display.setCursor(10*charWidth, y);
+		display.print(F("Time")); 
+
+		display.setCursor(18*charWidth, y);
+		display.print(F("mA")); 	
+	}
 
 	display.drawHLine(0, y + 2, displayWidth);
 
