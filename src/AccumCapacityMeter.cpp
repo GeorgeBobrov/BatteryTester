@@ -40,19 +40,19 @@ constexpr byte displayHeight = 64;
 
 // Variables created by the build process
 // when the sketch is compiled
-// extern int __bss_end;
-// extern void *__brkval;
+extern int __bss_end;
+extern void *__brkval;
  
 // Function that returns the amount of free RAM
-// int getSizeFreeRam()
-// {
-//    int freeValue;
-//    if((int)__brkval == 0)
-//       freeValue = ((int)&freeValue) - ((int)&__bss_end);
-//    else
-//       freeValue = ((int)&freeValue) - ((int)__brkval);
-//    return freeValue;
-// }
+int getSizeFreeRam()
+{
+   int freeValue;
+   if((int)__brkval == 0)
+      freeValue = ((int)&freeValue) - ((int)&__bss_end);
+   else
+      freeValue = ((int)&freeValue) - ((int)__brkval);
+   return freeValue;
+}
 
 void isrCLK() {
 	encoder.tick();
@@ -179,6 +179,7 @@ enum class ClickAction: byte {
 DisplayMode displayMode;
 ClickAction clickAction;
 bool debugMode;
+bool showFreeRAM;
 // For scrolling log
 byte shiftFromLastRec; 
 unsigned long timeDischargeStarted;
@@ -540,7 +541,6 @@ void loop() {
 
 
 				if (displayMode == DisplayMode::main) {
-					// Draw button
 					x = 2;
 					display.setCursor(x, y);
 
@@ -554,6 +554,7 @@ void loop() {
 							else	 
 								display.print(F("Start Discharge"));
 
+							// Draw button frame
 							display.drawFrame(x - 2, y - charHeight - 1, displayWidth, charHeight + 3);
 						}	
 					}
@@ -625,7 +626,7 @@ void loop() {
 				}
 
 				if (clickAction != ClickAction::viewLog) {
-					// Offset of top yellow part of display (and minus baseline offset of font)
+					// Offset of top yellow part of display
 					y = yellowHeaderHeight + charHeight;
 					x = 0;
 
@@ -705,6 +706,19 @@ void loop() {
 						printTime(time_s, 50, y);
 					}
 				}
+
+				if (showFreeRAM) {
+					x = displayWidth - 4*charWidth - 3;
+					y = displayHeight + 2;
+
+					display.setDrawColor(0);
+					display.drawBox(x, displayHeight - charHeight, 4*charWidth, charHeight);
+					display.setDrawColor(1);
+
+					display.setCursor(x, y);
+					display.print(getSizeFreeRam()); 
+				}
+				
 				encoder.tick();
 				if (encoder.isTurn()) break;
 				// sendTimeDebugInfoToSerial(F(" Before_Display_nextPage "));
@@ -936,6 +950,9 @@ void checkCommandsFromSerial() {
 
 		if (str.startsWith(F("debug")))
 			debugMode = !debugMode;
+
+		if (str.startsWith(F("showFreeRAM")))
+			showFreeRAM = !showFreeRAM;
 
 	}
 }
