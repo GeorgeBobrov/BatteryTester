@@ -28,15 +28,59 @@ float wantedDischargeCurrent = 0.1; // Initial value
 constexpr float maxDischargeCurrent = 1; 
 constexpr float maxVoltage = 5.0; 
 
-constexpr int16_t MAX_ADC_VALUE = bit(10) - 1;
+constexpr u16 MAX_ADC_VALUE = bit(10) - 1;
 // Use GyverPWM library, 10 bit PWM (PWM_16KHZ_D9 function)
-constexpr int16_t MAX_PWM_VALUE = bit(10) - 1;
+constexpr u16 MAX_PWM_VALUE = bit(10) - 1;
 
 
 Encoder encoder(pinEnc1, pinEnc2, pinEncButton); 
-U8G2_SSD1306_128X64_NONAME_2_HW_I2C display(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
+
+// U8G2_SSD1306_128X64_NONAME_2_HW_I2C display(U8G2_R0);
+// Modified U8G2 constructor for faster display redraw with new image output mode. 
+// 
+// The original has three modes of image output to the display:
+// *   the entire screen at a time (version F in the constructor) - screen buffer 1024B;
+// *   by parts (stripes) 8 times (version 1 in the constructor) - screen buffer 128B;
+// *   by parts (stripes) 4 times (version 2 in the constructor) - screen buffer 256B;
+// 
+// **Added**: by parts (stripes) 2 times (version 4 in the constructor) - screen buffer 512B;
+// 
+// In this case screen update occurs more often, than with versions 1 and 2. 
+// It is worth using if free RAM is not enough for version F, but more than 512B.
+uint8_t *u8g2_m_16_8_4(uint8_t *page_cnt)
+{
+  #ifdef U8G2_USE_DYNAMIC_ALLOC
+  *page_cnt = 4;
+  return 0;
+  #else
+  static uint8_t buf[512];
+  *page_cnt = 4;
+  return buf;
+  #endif
+}
+
+void u8g2_Setup_ssd1306_i2c_128x64_noname_4(u8g2_t *u8g2, const u8g2_cb_t *rotation, u8x8_msg_cb byte_cb, u8x8_msg_cb gpio_and_delay_cb)
+{
+  uint8_t tile_buf_height;
+  uint8_t *buf;
+  u8g2_SetupDisplay(u8g2, u8x8_d_ssd1306_128x64_noname, u8x8_cad_ssd13xx_fast_i2c, byte_cb, gpio_and_delay_cb);
+  buf = u8g2_m_16_8_4(&tile_buf_height);
+  u8g2_SetupBuffer(u8g2, buf, tile_buf_height, u8g2_ll_hvline_vertical_top_lsb, rotation);
+}
+
+class U8G2_SSD1306_128X64_NONAME_4_HW_I2C : public U8G2 {
+  public: U8G2_SSD1306_128X64_NONAME_4_HW_I2C(const u8g2_cb_t *rotation, uint8_t reset = U8X8_PIN_NONE, uint8_t clock = U8X8_PIN_NONE, uint8_t data = U8X8_PIN_NONE) : U8G2() {
+    u8g2_Setup_ssd1306_i2c_128x64_noname_4(&u8g2, rotation, u8x8_byte_arduino_hw_i2c, u8x8_gpio_and_delay_arduino);
+    u8x8_SetPin_HW_I2C(getU8x8(), reset, clock, data);
+  }
+};
+
+U8G2_SSD1306_128X64_NONAME_4_HW_I2C display(U8G2_R0);
+
 constexpr byte displayWidth = 128;
 constexpr byte displayHeight = 64;
+
+constexpr u32 SerialSpeed = 500000;
 
 // Variables created by the build process
 // when the sketch is compiled
@@ -93,7 +137,7 @@ void setup() {
 
 	analogReference(INTERNAL);
 
-	Serial.begin(500000);
+	Serial.begin(SerialSpeed);
 	encoder.setType(TYPE2);
 
 	// mode = EEPROM.read(0);
@@ -115,8 +159,7 @@ bool usbConnected;
 bool prevUsbConnected;
 
 bool enableDischarge;
-bool enableShowOnDisplay = true;
-uint16_t prevPwmValueForCurrent;
+u16 prevPwmValueForCurrent;
 
 unsigned long dischargeTime_s; 
 unsigned long sumOfSeveralPeriods_us; 
@@ -132,7 +175,12 @@ void sendOscillogramToSerial(float &Time_s, float &Voltage, float &Current, floa
 void printTableCaption(const __FlashStringHelper *ifsh);
 void drawLog(byte shiftFromLastRec, bool drawHeader = true);
 void checkCommandsFromSerial();
-// void sendTimeDebugInfoToSerial(const __FlashStringHelper *msg, byte marker = 0);
+
+//To measure the time required to draw to the screen buffer and output the buffer to the display
+// #define debugTimings
+#ifdef debugTimings
+void sendTimeDebugInfoToSerial(const __FlashStringHelper *msg, byte marker = 0);
+#endif
 
 struct AccumCapacityRecord
 {
@@ -186,7 +234,7 @@ unsigned long timeDischargeStarted;
 unsigned long timeDischargeStopped;
 bool rewriteLastRecord;
 unsigned long timeOscillogramStarted_us;
-uint16_t oscilPeriod_ms;
+u16 oscilPeriod_ms;
 float accumVoltage;
 
 enum class MeasureRinStatus: byte {
@@ -242,7 +290,10 @@ void startStopDischarge(bool l_enableDischarge) {
 }
 
 void loop() {
-	// sendTimeDebugInfoToSerial(F(" Start_Loop "), 1);
+	#ifdef debugTimings
+	sendTimeDebugInfoToSerial(F(" Start_Loop "), 1);
+	#endif
+
 	encoder.tick();
 
 	unsigned long curTime_us = micros();
@@ -380,8 +431,8 @@ void loop() {
 		// int accumVoltageADC = analogRead(pinAnVoltage);
 		// Averaging a number of measurements for more stable readings
 		constexpr byte averCount = 5;
-		int voltAdcSum = 0;
-		int curAdcSum = 0;
+		u16 voltAdcSum = 0;
+		u16 curAdcSum = 0;
 		for (byte i = 0; i < averCount; i++) {
 			voltAdcSum += analogRead(pinMeasureVoltage);
 			curAdcSum += analogRead(pinMeasureCurrent);
@@ -452,7 +503,7 @@ void loop() {
 			// Since the charge and discharge resistances are not equal, a correction is needed 
 			constexpr float PwmCorrectionCoef = 1.04;
 			constexpr float PwmStepInV = (redLedVoltage / MAX_PWM_VALUE) * PwmCorrectionCoef;
-			uint16_t pwmValueForCurrent = wantedShuntVoltage / PwmStepInV;
+			u16 pwmValueForCurrent = wantedShuntVoltage / PwmStepInV;
 			pwmValueForCurrent = min(pwmValueForCurrent, MAX_PWM_VALUE);
 			if ((pwmValueForCurrent > prevPwmValueForCurrent * 1.15) ||
 				(pwmValueForCurrent == 0) ||
@@ -527,11 +578,16 @@ void loop() {
 
 		if (displayMode != DisplayMode::off) {
 			display.firstPage();
-			// sendTimeDebugInfoToSerial(F(" Before_Display_Loop "));
+			#ifdef debugTimings
+			sendTimeDebugInfoToSerial(F(" Before_Display_Loop "));
+			#endif
 
 			byte pageNum = 0;
 			do {
-				// sendTimeDebugInfoToSerial(F(" Before_Display_Paint "));
+				#ifdef debugTimings
+				sendTimeDebugInfoToSerial(F(" Before_Display_Paint "));
+				#endif
+
 				encoder.tick();
 				if (encoder.isTurn()) break;
 
@@ -634,12 +690,10 @@ void loop() {
 					byte y2 = y + (charHeight + /*spacingBetweenLines*/2);
 
 					display.setCursor(x, y);
-					// display.print(F("FreeRAM")); 
 					display.print(F("Voltage")); 
 
 					display.setCursor(x, y2);
 					display.print(accumVoltage); 
-					// display.print(getSizeFreeRam()); 
 					
 					display.setCursor(x + 6*charWidth, y2);
 					display.print(F("V")); 
@@ -680,12 +734,12 @@ void loop() {
 
 					if ((clickAction == ClickAction::setCurrent) && debugMode) {
 						char t[21];
-						sprintf_P(t, PSTR("C %dmV %d+%dmA %dref"), int(shuntVoltage * 1000), int(accumCurrent * 1000), 
-							int(microcontrollerCurrent * 1000), int(referenceVoltageCorrected * 1000));
+						sprintf_P(t, PSTR("C %dmV %d+%dmA %dref"), u16(shuntVoltage * 1000), u16(accumCurrent * 1000), 
+							u16(microcontrollerCurrent * 1000), u16(referenceVoltageCorrected * 1000));
 						display.setCursor(0, y);
 						display.print(t);
 						
-						sprintf_P(t, PSTR("V %dmV PWM %d"), int(accumVoltageDivided * 1000), prevPwmValueForCurrent);
+						sprintf_P(t, PSTR("V %dmV PWM %d"), u16(accumVoltageDivided * 1000), prevPwmValueForCurrent);
 						y += (charHeight + /*spacingBetweenLines*/3);
 						display.setCursor(0, y);
 						display.print(t);
@@ -721,7 +775,10 @@ void loop() {
 				
 				encoder.tick();
 				if (encoder.isTurn()) break;
-				// sendTimeDebugInfoToSerial(F(" Before_Display_nextPage "));
+
+				#ifdef debugTimings
+				sendTimeDebugInfoToSerial(F(" Before_Display_nextPage "));
+				#endif
 
 				pageNum++;
 			} while ( display.nextPage() );
@@ -737,7 +794,7 @@ void loop() {
 		}
 
 		if (enableSendOscillogramToSerial) {
-			uint16_t periodFromLastOscil_ms = (curTime_us - lastTimeSerial_us) / 1000;
+			u16 periodFromLastOscil_ms = (curTime_us - lastTimeSerial_us) / 1000;
 			if (periodFromLastOscil_ms >= oscilPeriod_ms) {
 				lastTimeSerial_us = curTime_us;
 				float timeFromOscillogramStarted_s = (curTime_us - timeOscillogramStarted_us)  / 1000000.0;
@@ -745,7 +802,10 @@ void loop() {
 				sendOscillogramToSerial(timeFromOscillogramStarted_s, accumVoltage, loadCurrent, accumCapacity_AH);
 			}
 		}
-		// sendTimeDebugInfoToSerial(F(" End_Loop ")); 
+		
+		#ifdef debugTimings
+		sendTimeDebugInfoToSerial(F(" End_Loop ")); 
+		#endif
 
 	}
 
@@ -873,24 +933,27 @@ void sendOscillogramToSerial(float &Time_s, float &Voltage, float &Current, floa
 		Serial.println(Capacity_AH * 1000); 
 	}
 }
-// unsigned long prevDebugInfoTime;  
-// unsigned long markerDebugInfoTime;  
-// void sendTimeDebugInfoToSerial(const __FlashStringHelper *msg, byte marker = 0) {
-// 	if (usbConnected && debugMode) {
-// 		unsigned long curDebugInfoTime = millis();
-// 		Serial.print(curDebugInfoTime); 
-// 		Serial.print(msg);
-// 		Serial.println(curDebugInfoTime - prevDebugInfoTime); 
-		
-// 		if (marker) {
-// 			Serial.print(F("marker "));
-// 			Serial.println(curDebugInfoTime - markerDebugInfoTime); 
-// 			markerDebugInfoTime = curDebugInfoTime;
-// 		}
 
-// 		prevDebugInfoTime = curDebugInfoTime;
-// 	}
-// }
+#ifdef debugTimings
+unsigned long prevDebugInfoTime;  
+unsigned long markerDebugInfoTime;  
+void sendTimeDebugInfoToSerial(const __FlashStringHelper *msg, byte marker = 0) {
+	if (usbConnected && debugMode) {
+		unsigned long curDebugInfoTime = millis();
+		Serial.print(curDebugInfoTime); 
+		Serial.print(msg);
+		Serial.println(curDebugInfoTime - prevDebugInfoTime); 
+		
+		if (marker) {
+			Serial.print(F("marker "));
+			Serial.println(curDebugInfoTime - markerDebugInfoTime); 
+			markerDebugInfoTime = curDebugInfoTime;
+		}
+
+		prevDebugInfoTime = curDebugInfoTime;
+	}
+}
+#endif
 
 void saveRecordToEEPROM(AccumCapacityRecord &capacityRecord, bool rewriteLastRecord/* = false*/) {
 	byte indexOfLastRecordInEEPROM = EEPROM[0];
@@ -947,6 +1010,21 @@ void checkCommandsFromSerial() {
 			oscilPeriod_ms = str.toInt();
 			if (oscilPeriod_ms < 0) oscilPeriod_ms = 0;
 		}
+
+		// For testing different uC frequencies
+		// if (str.startsWith(F("set prescaler"))) {
+		// 	str.remove(0, 13);
+		// 	str.trim();
+		// 	byte prescaler = str.toInt();
+		// 	prescalers_t prescalert;
+		// 	switch (prescaler) {
+		// 		case 1: prescalert = PRESCALER_1; break;
+		// 		case 2: prescalert = PRESCALER_2; break;
+		// 		case 4: prescalert = PRESCALER_4; break;
+		// 	}
+		// 	power.setSystemPrescaler(prescalert);
+		// 	Serial.begin(SerialSpeed * prescaler / 2);
+		// }
 
 		if (str.startsWith(F("debug")))
 			debugMode = !debugMode;
