@@ -47,31 +47,13 @@ Encoder encoder(pinEnc1, pinEnc2, pinEncButton);
 // 
 // In this case screen update occurs more often, than with versions 1 and 2. 
 // It is worth using if free RAM is not enough for version F, but more than 512B.
-uint8_t *u8g2_m_16_8_4(uint8_t *page_cnt)
-{
-  #ifdef U8G2_USE_DYNAMIC_ALLOC
-  *page_cnt = 4;
-  return 0;
-  #else
-  static uint8_t buf[512];
-  *page_cnt = 4;
-  return buf;
-  #endif
-}
-
-void u8g2_Setup_ssd1306_i2c_128x64_noname_4(u8g2_t *u8g2, const u8g2_cb_t *rotation, u8x8_msg_cb byte_cb, u8x8_msg_cb gpio_and_delay_cb)
-{
-  uint8_t tile_buf_height;
-  uint8_t *buf;
-  u8g2_SetupDisplay(u8g2, u8x8_d_ssd1306_128x64_noname, u8x8_cad_ssd13xx_fast_i2c, byte_cb, gpio_and_delay_cb);
-  buf = u8g2_m_16_8_4(&tile_buf_height);
-  u8g2_SetupBuffer(u8g2, buf, tile_buf_height, u8g2_ll_hvline_vertical_top_lsb, rotation);
-}
-
 class U8G2_SSD1306_128X64_NONAME_4_HW_I2C : public U8G2 {
   public: U8G2_SSD1306_128X64_NONAME_4_HW_I2C(const u8g2_cb_t *rotation, uint8_t reset = U8X8_PIN_NONE, uint8_t clock = U8X8_PIN_NONE, uint8_t data = U8X8_PIN_NONE) : U8G2() {
-    u8g2_Setup_ssd1306_i2c_128x64_noname_4(&u8g2, rotation, u8x8_byte_arduino_hw_i2c, u8x8_gpio_and_delay_arduino);
-    u8x8_SetPin_HW_I2C(getU8x8(), reset, clock, data);
+	u8g2_SetupDisplay(&u8g2, u8x8_d_ssd1306_128x64_noname, u8x8_cad_ssd13xx_fast_i2c, u8x8_byte_arduino_hw_i2c, u8x8_gpio_and_delay_arduino);
+	uint8_t tile_buf_height = 4;
+	static uint8_t buf[512];
+	u8g2_SetupBuffer(&u8g2, buf, tile_buf_height, u8g2_ll_hvline_vertical_top_lsb, rotation);
+	u8x8_SetPin_HW_I2C(getU8x8(), reset, clock, data);
   }
 };
 
@@ -380,6 +362,19 @@ void loop() {
 					if (wantedDischargeCurrent < 0) wantedDischargeCurrent = 0;
 					prevPwmValueForCurrent = 0;
 				}
+
+				if (encoder.isRightH()) {
+					wantedDischargeCurrent += 0.001;
+					if (wantedDischargeCurrent > maxDischargeCurrent) 
+						wantedDischargeCurrent = maxDischargeCurrent;
+					prevPwmValueForCurrent = 0;
+				}
+				if (encoder.isLeftH()) {
+					wantedDischargeCurrent -= 0.001; 
+					if (wantedDischargeCurrent < 0) wantedDischargeCurrent = 0;
+					prevPwmValueForCurrent = 0;
+				}
+
 				if (encoder.isClick())
 					displayMode = DisplayMode::main;
 			break;
