@@ -557,11 +557,12 @@ void loop() {
 			// tone(LED_BUILTIN, 1, 2000);
 		}
 
-		if ((timeDischargeStopped > 0) && (curTime_us - timeDischargeStopped >= 3000000)) {
+		constexpr unsigned long timeAfterStopDischargeForLog_us = 3000000;
+		if ((timeDischargeStopped > 0) && (curTime_us - timeDischargeStopped >= timeAfterStopDischargeForLog_us)) {
 			timeDischargeStopped = 0;
 
 			AccumCapacityRecord capacityRecord{.Voltage = accumVoltage, .Current = loadCurrent, 
-				.Capacity_AH = accumCapacity_AH, .dischargeTime_s = dischargeTime_s};
+				.Capacity_AH = accumCapacity_AH, .dischargeTime_s = dischargeTime_s + timeAfterStopDischargeForLog_us / 1000000};
 
 			saveRecordToEEPROM(capacityRecord);
 
