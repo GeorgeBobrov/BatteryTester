@@ -33,7 +33,7 @@ constexpr u16 MAX_ADC_VALUE = bit(10) - 1;
 constexpr u16 MAX_PWM_VALUE = bit(10) - 1;
 
 
-Encoder encoder(pinEnc1, pinEnc2, pinEncButton); 
+Encoder encoder(pinEnc1, pinEnc2, pinEncButton, TYPE2); //switched to BINARY_ALGORITHM (it works faster), but now need TYPE2 to prevent double triggering
 
 // U8G2_SSD1306_128X64_NONAME_2_HW_I2C display(U8G2_R0);
 // Modified U8G2 constructor for faster display redraw with new image output mode. 
