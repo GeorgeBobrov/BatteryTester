@@ -547,6 +547,17 @@ void loop() {
 				lastSavedAccumCapacity_AH = accumCapacity_AH;
 			}
 
+		// save AccumCapacityRecord every 500 mAh (relevant for LiFePo accums, since their voltage changes slightly during discharge) 
+		if ((accumCapacity_AH > lastSavedAccumCapacity_AH + 0.500) && enableDischarge) 
+		{
+			AccumCapacityRecord capacityRecord{.Voltage = accumVoltage, .Current = loadCurrent, 
+				.Capacity_AH = accumCapacity_AH, .dischargeTime_s = dischargeTime_s};
+
+			saveRecordToEEPROM(capacityRecord, rewriteLastRecord);			
+			rewriteLastRecord = false;
+
+			lastSavedAccumCapacity_AH = accumCapacity_AH;
+		}
 
 		if ((accumVoltage <= stopDischargeVoltage) && enableDischarge) { // stopDischarge
 			startStopDischarge(false);
