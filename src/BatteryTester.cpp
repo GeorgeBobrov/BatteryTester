@@ -33,7 +33,8 @@ constexpr u16 MAX_ADC_VALUE = bit(10) - 1;
 constexpr u16 MAX_PWM_VALUE = bit(10) - 1;
 
 
-Encoder encoder(pinEnc1, pinEnc2, pinEncButton, TYPE2); //switched to BINARY_ALGORITHM (it works faster), but now need TYPE2 to prevent double triggering
+Encoder encoder(pinEnc1, pinEnc2, pinEncButton, TYPE2); //switched to new lib ver 4.10 (it works faster), 
+//BINARY_ALGORITHM, but now need TYPE2 to prevent double triggering
 
 // U8G2_SSD1306_128X64_NONAME_2_HW_I2C display(U8G2_R0);
 // Modified U8G2 constructor for faster display redraw with new image output mode. 
@@ -144,7 +145,7 @@ bool enableDischarge;
 u16 prevPwmValueForCurrent;
 
 unsigned long dischargeTime_s; 
-unsigned long sumOfSeveralPeriods_us; 
+unsigned long timeAccum_us; 
 float accumCapacity_AH;
 float lastSavedAccumCapacity_AH;
 float threshholdVoltage; //Log capacity when reaching threshhold voltage
@@ -188,26 +189,38 @@ constexpr byte tableHeight = displayHeight - tableHeaderHeight;
 constexpr byte linesOfLogOnScreen = round(float(tableHeight) / charHeight); 
 constexpr byte additionalSpacingForFirstLine = 2;
 
-enum class DisplayMode: byte {
+enum class Screen: byte {
 	main,
 	setCurrent,
 	setDischargeVoltage,
 	// measureRin,
 	viewLog,
-	off
+	sleep
 };
+Screen screen;
 
 enum class ClickAction: byte {
-	startDischarge,
+	startStopDischarge,
+	// stopDischarge,
 	setCurrent,
+	endSetCurrent,
 	setDischargeVoltage,
+	endSetDischargeVoltage,
 	// measureRin,
 	viewLog,
-	off
+	endViewLog,
+	sleep
 };
-
-DisplayMode displayMode;
 ClickAction clickAction;
+
+enum class RotateAction: byte {
+	changeDisplayMode,
+	changeCurrent,
+	changeDischargeVoltage,
+	scrollLog,
+};
+RotateAction rotateAction;
+
 bool debugMode;
 bool showFreeRAM;
 // For scrolling log
@@ -231,7 +244,7 @@ struct MeasureRin {
 } measureRin;
 
 void powerdownSleep() {
-	displayMode = DisplayMode::off;
+	// screen = Screen::off;
 	display.noDisplay();
 	Serial.end();
 	Wire.end();
@@ -245,7 +258,7 @@ void powerdownSleep() {
 }
 
 void restoreAfterSleep() {
-	displayMode = DisplayMode::main;
+	screen = Screen::main;
 	display.begin();
 	if (usbConnected)
 		Serial.begin(500000);
@@ -294,63 +307,110 @@ void loop() {
 			prevUsbConnected = usbConnected;
 		}
 
-		switch (displayMode) {
-			case DisplayMode::main:
+		if (encoder.isClick()) {
+			switch (clickAction) {
+				case ClickAction::startStopDischarge:
+					if (!enableDischarge) // going to start discharge
+						if (accumVoltage < stopDischargeVoltage) {
+							screen = Screen::setDischargeVoltage;
+							break;
+						}	
+				
+					startStopDischarge(!enableDischarge);
+					if (enableDischarge)
+						timeDischargeStarted = curTime_us;
+				break;		
+
+
+				case ClickAction::setCurrent: 
+					rotateAction = RotateAction::changeCurrent;
+					clickAction = ClickAction::endSetCurrent;
+				break;
+				case ClickAction::endSetCurrent: 
+					rotateAction = RotateAction::changeDisplayMode;
+					clickAction = ClickAction::setCurrent;
+				break;
+
+				case ClickAction::setDischargeVoltage: 
+					rotateAction = RotateAction::changeDischargeVoltage;
+					clickAction = ClickAction::endSetDischargeVoltage;
+				break;
+				case ClickAction::endSetDischargeVoltage: 
+					rotateAction = RotateAction::changeDisplayMode;
+					clickAction = ClickAction::setDischargeVoltage;
+				break;
+
+
+				case ClickAction::viewLog: 
+					rotateAction = RotateAction::scrollLog;
+					clickAction = ClickAction::endViewLog;
+				break;
+				case ClickAction::endViewLog: 
+					rotateAction = RotateAction::changeDisplayMode;
+					clickAction = ClickAction::viewLog;
+					shiftFromLastRec = 0;
+				break;
+
+				case ClickAction::sleep:
+					powerdownSleep();
+					// sleep here until interrupt 
+					restoreAfterSleep();
+				break;
+			}
+		}
+
+		switch (rotateAction) {
+			case RotateAction::changeDisplayMode: {
 				if (encoder.isRight()) {
-					if (clickAction == ClickAction::off)
-						clickAction = ClickAction(0);
+					if (screen == Screen::sleep)
+						screen = Screen(0);
 					else	
-						clickAction = ClickAction( byte(clickAction) + 1);
+						screen = Screen( byte(screen) + 1);
 					 
 					timeShowDescription = curTime_us + 1000000;
-					if (clickAction == ClickAction::startDischarge)
+					if (screen == Screen::main)
 						timeShowDescription = curTime_us;
 				}
 
 				if (encoder.isLeft()) {
-					if (clickAction == ClickAction(0)) 
-						clickAction = ClickAction::off;
+					if (screen == Screen(0)) 
+						screen = Screen::sleep;
 					else	
-						clickAction = ClickAction( byte(clickAction) - 1);
+						screen = Screen( byte(screen) - 1);
 					
 					timeShowDescription = curTime_us + 1000000;
-					if (clickAction == ClickAction::startDischarge)
+					if (screen == Screen::main)
 						timeShowDescription = curTime_us;
 				}
 
-				if (encoder.isClick()) {
-					switch (clickAction) {
-						case ClickAction::startDischarge:
-							if (!enableDischarge) // going to start discharge
-								if (accumVoltage < stopDischargeVoltage) {
-									displayMode = DisplayMode::setDischargeVoltage;
-									break;
-								}	
-						
-							startStopDischarge(!enableDischarge);
-							if (enableDischarge)
-								timeDischargeStarted = curTime_us;
-						break;
-						case ClickAction::setCurrent:
-							displayMode = DisplayMode::setCurrent;
-						break;
-						case ClickAction::setDischargeVoltage:
-							displayMode = DisplayMode::setDischargeVoltage;
-						break;
-						// case ClickAction::measureRin:
-						// 	displayMode = DisplayMode::measureRin;
-						// 	break;
-						case ClickAction::viewLog:
-							displayMode = DisplayMode::viewLog;
-						break;
-						case ClickAction::off:
-							powerdownSleep();
-						break;
-					}
+				switch (screen) {
+					case Screen::main:
+						clickAction = ClickAction::startStopDischarge;
+					break;
+
+					case Screen::setCurrent:
+						clickAction = ClickAction::setCurrent;
+					break;
+
+					case Screen::setDischargeVoltage:
+						clickAction = ClickAction::setDischargeVoltage;
+					break;
+
+					case Screen::viewLog:
+						clickAction = ClickAction::viewLog;
+					break;
+
+					case Screen::sleep:
+						clickAction = ClickAction::sleep;
+					break;
+
 				}
-			break;
+
+			} break;
+
+
 				
-			case DisplayMode::setCurrent:
+			case RotateAction::changeCurrent:
 				if (encoder.isRight()) {
 					wantedDischargeCurrent += 0.05;
 					if (wantedDischargeCurrent > maxDischargeCurrent) 
@@ -375,11 +435,9 @@ void loop() {
 					prevPwmValueForCurrent = 0;
 				}
 
-				if (encoder.isClick())
-					displayMode = DisplayMode::main;
 			break;
 				
-			case DisplayMode::setDischargeVoltage:
+			case RotateAction::changeDischargeVoltage:
 				if (encoder.isRight()) {
 					stopDischargeVoltage += 0.1;
 					if (stopDischargeVoltage > maxVoltage) 
@@ -393,11 +451,9 @@ void loop() {
 					if (stopDischargeVoltage < 0.1) stopDischargeVoltage = 0.1;
 					prevPwmValueForCurrent = 0;
 				}
-				if (encoder.isClick())
-					displayMode = DisplayMode::main;
 			break;
 
-			case DisplayMode::viewLog:
+			case RotateAction::scrollLog:
 				if (encoder.isLeft()) {
 					if (shiftFromLastRec < numOfRecordsInEEPROM - linesOfLogOnScreen) 
 						shiftFromLastRec++;
@@ -406,19 +462,10 @@ void loop() {
 					if (shiftFromLastRec > 0)
 						shiftFromLastRec--; 
 				}
-				if (encoder.isClick()) {
-					displayMode = DisplayMode::main;
-					shiftFromLastRec = 0;
-				}
 			break;
 
-			case DisplayMode::off:	
-				if (encoder.isLeft())
-					restoreAfterSleep();
-				if (encoder.isRight())
-					restoreAfterSleep();
-			break;
 		} 
+
 		if ((clickAction == ClickAction::setCurrent) && encoder.isHolded())
 			debugMode = !debugMode;
 
@@ -484,11 +531,11 @@ void loop() {
 
 			float accumCapacityPerPeriod_AH = loadCurrent * periodFromLastMeasure_us / us_in_hour;
 			accumCapacity_AH += accumCapacityPerPeriod_AH;
-			sumOfSeveralPeriods_us += periodFromLastMeasure_us;
+			timeAccum_us += periodFromLastMeasure_us;
 
-			if (sumOfSeveralPeriods_us > 1000000) {
-				dischargeTime_s += sumOfSeveralPeriods_us / 1000000;
-				sumOfSeveralPeriods_us %= 1000000;
+			if (timeAccum_us > 1000000) {
+				dischargeTime_s += timeAccum_us / 1000000;
+				timeAccum_us %= 1000000;
 			}
 
 			// Setting discharg current via PWM
@@ -580,10 +627,13 @@ void loop() {
 			if (!(usbConnected && enableSendOscillogramToSerial)) {
 				Serial.flush();
 				powerdownSleep();
+				// sleep here until interrupt 
+				restoreAfterSleep();
 			}
 		}
 
-		if (displayMode != DisplayMode::off) {
+//---------------------------------- Display ---------------------------------------
+		{
 			display.firstPage();
 			#ifdef debugTimings
 			sendTimeDebugInfoToSerial(F(" Before_Display_Loop "));
@@ -602,12 +652,11 @@ void loop() {
 				byte y = charHeight + additionalSpacingForFirstLine;
 				byte x = 0;
 
-
-				if (displayMode == DisplayMode::main) {
+				if (screen == Screen::main) {
 					x = 2;
 					display.setCursor(x, y);
 
-					if (clickAction == ClickAction::startDischarge) {
+					if (clickAction == ClickAction::startStopDischarge) {
 						bool showDescription = (curTime_us < timeShowDescription);
 						if (showDescription)
 							display.print(F("Battery tester"));
@@ -622,30 +671,35 @@ void loop() {
 						}	
 					}
 
+				} 
+
+				if (screen == Screen::sleep) {
+					x = 2;
+					display.setCursor(x, y);
+					display.print(F("Sleep")); 
+					display.drawFrame(x - 2, y - charHeight - 1, displayWidth, charHeight + 3);
+				}
+				
+				if (screen == Screen::viewLog) {
+					x = 2;
+					display.setCursor(x, y);
+					bool showDescription = false;
 					if (clickAction == ClickAction::viewLog) {
-						bool showDescription = (curTime_us < timeShowDescription);
+						showDescription = (curTime_us < timeShowDescription);
 						if (showDescription)
 							display.print(F("Log"));
-						drawLog(0, !showDescription); 
-						display.drawFrame(x - 2, y - charHeight - 1, displayWidth, charHeight + 3);
 
-					}
-						
-					if (clickAction == ClickAction::off) {
-						display.print(F("Sleep")); 
 						display.drawFrame(x - 2, y - charHeight - 1, displayWidth, charHeight + 3);
 					}
-				} 
-				
-				if (displayMode == DisplayMode::viewLog)
-					drawLog(shiftFromLastRec); 
 
-				if ((displayMode == DisplayMode::setCurrent) || 
-					((displayMode == DisplayMode::main) && (clickAction == ClickAction::setCurrent))) {
+					drawLog(shiftFromLastRec, !showDescription); 
+				}
+
+				if (screen == Screen::setCurrent) {
 					display.setCursor(0, y);
 
 					bool showDescription = (curTime_us < timeShowDescription);
-					if ((displayMode == DisplayMode::main) && showDescription)
+					if (showDescription)
 						display.print(F("Discharge Current"));
 					else {	
 						display.print(F("Dsc Cur:       A")); 
@@ -656,20 +710,19 @@ void loop() {
 
 					x = displayWidth - 3*charWidth - 3;
 					display.setCursor(x, y);
-					if (displayMode == DisplayMode::setCurrent)
-						display.print(F("OK")); 
-					else	
+					if (clickAction == ClickAction::setCurrent)
 						display.print(F("Set")); 
+					if (clickAction == ClickAction::endSetCurrent)
+						display.print(F("OK")); 
 
 					display.drawFrame(x - 2, y - charHeight - 1, 3*charWidth + 4, charHeight + 3);
 				}
 
-				if ((displayMode == DisplayMode::setDischargeVoltage) || 
-					((displayMode == DisplayMode::main) && (clickAction == ClickAction::setDischargeVoltage))) {
+				if (screen == Screen::setDischargeVoltage) {
 					display.setCursor(0, y);
 
 					bool showDescription = (curTime_us < timeShowDescription);
-					if ((displayMode == DisplayMode::main) && showDescription)
+					if (showDescription)
 						display.print(F("Stop Voltage"));
 					else {	
 						display.print(F("Stop Volt:      V")); 
@@ -680,15 +733,15 @@ void loop() {
 
 					x = displayWidth - 3*charWidth - 3;
 					display.setCursor(x, y);
-					if (displayMode == DisplayMode::setDischargeVoltage)
-						display.print(F("OK")); 
-					else	
+					if (clickAction == ClickAction::setDischargeVoltage)
 						display.print(F("Set")); 
+					if (clickAction == ClickAction::endSetDischargeVoltage)
+						display.print(F("OK")); 
 
 					display.drawFrame(x - 2, y - charHeight - 1, 3*charWidth + 4, charHeight + 3);
 				}
 
-				if (clickAction != ClickAction::viewLog) {
+				if (screen != Screen::viewLog) {
 					// Offset of top yellow part of display
 					y = yellowHeaderHeight + charHeight;
 					x = 0;
