@@ -28,9 +28,7 @@ float wantedDischargeCurrent = 0.1; // Initial value
 constexpr float maxDischargeCurrent = 1; 
 constexpr float maxVoltage = 5.0; 
 
-constexpr u16 MAX_ADC_VALUE = bit(10) - 1;
-// Use GyverPWM library, 10 bit PWM (PWM_16KHZ_D9 function)
-constexpr u16 MAX_PWM_VALUE = bit(10) - 1;
+constexpr u32 SerialSpeed = 500000;
 
 
 Encoder encoder(pinEnc1, pinEnc2, pinEncButton, TYPE2); //switched to new lib ver 4.10 (it works faster), 
@@ -63,7 +61,121 @@ U8G2_SSD1306_128X64_NONAME_4_HW_I2C display(U8G2_R0);
 constexpr byte displayWidth = 128;
 constexpr byte displayHeight = 64;
 
-constexpr u32 SerialSpeed = 500000;
+constexpr byte charWidth = 6;
+constexpr byte charHeight = 10;
+constexpr byte yellowHeaderHeight = 16;
+constexpr byte tableHeaderHeight = yellowHeaderHeight;
+constexpr byte tableHeight = displayHeight - tableHeaderHeight;
+// 64 (displayHeight) - 16 (tableHeaderHeight) = 48
+// 48 / charHeight (10) = 4.8, round up to 5 
+constexpr byte linesOfLogOnScreen = round(float(tableHeight) / charHeight); 
+constexpr byte additionalSpacingForFirstLine = 2;
+
+constexpr u16 MAX_ADC_VALUE = bit(10) - 1;
+// Use GyverPWM library, 10 bit PWM (PWM_16KHZ_D9 function)
+constexpr u16 MAX_PWM_VALUE = bit(10) - 1;
+
+
+unsigned long lastTimeMeasure_us = 0;
+unsigned long lastTimeSerial_us = 0;
+bool enableSendMeasurementsToSerial;
+bool enableSendOscillogramToSerial;
+bool usbConnected;
+bool prevUsbConnected;
+
+bool enableDischarge;
+u16 prevPwmValueForCurrent;
+
+unsigned long dischargeTime_s; 
+unsigned long timeAccum_us; 
+float accumCapacity_AH;
+float lastSavedAccumCapacity_AH;
+float threshholdVoltage; //Log capacity when reaching threshhold voltage
+
+bool debugMode;
+bool showFreeRAM;
+// For scrolling log
+byte shiftFromLastRec; 
+unsigned long timeDischargeStarted;
+unsigned long timeDischargeStopped;
+bool rewriteLastRecord;
+unsigned long timeOscillogramStarted_us;
+u16 oscilPeriod_ms;
+float accumVoltage;
+
+//To measure the time required to draw to the screen buffer and output the buffer to the display
+// #define debugTimings
+#ifdef debugTimings
+void sendTimeDebugInfoToSerial(const __FlashStringHelper *msg, byte marker = 0);
+#endif
+
+struct AccumCapacityRecord
+{
+	float Voltage;
+	float Current;
+	float Capacity_AH;
+	unsigned long dischargeTime_s;
+};
+
+// need to to add "constexpr" in EEPROM.h in this line:
+//    constexpr uint16_t length()                    { return E2END + 1; }
+constexpr byte numOfRecordsInEEPROM = (EEPROM.length() / sizeof(AccumCapacityRecord)) - 1;
+constexpr byte offssetOfLogRecordsInEEPROM = 4; // for storing indexOfLastRecordInEEPROM
+
+
+enum class Screen: byte {
+	main,
+	setCurrent,
+	setDischargeVoltage,
+	// measureRin,
+	viewLog,
+	sleep
+};
+Screen screen;
+
+enum class ClickAction: byte {
+	startStopDischarge,
+	// stopDischarge,
+	setCurrent,
+	endSetCurrent,
+	setDischargeVoltage,
+	endSetDischargeVoltage,
+	// measureRin,
+	viewLog,
+	endViewLog,
+	sleep
+};
+ClickAction clickAction;
+
+enum class RotateAction: byte {
+	changeDisplayMode,
+	changeCurrent,
+	changeDischargeVoltage,
+	scrollLog,
+};
+RotateAction rotateAction;
+
+
+enum class MeasureRinStatus: byte {
+	notMeasured,
+	measuredVoltageStart,
+	measuredVoltageEnd
+};
+
+struct MeasureRin {
+	float voltageStart, voltageEnd, current;  
+	MeasureRinStatus status;
+} measureRin;
+
+constexpr unsigned long us_in_hour = 60UL * 60 * 1000 * 1000;
+void printTime(unsigned long time_s, byte startXpos, byte startYpos);
+void sendMeasurementsToSerial(float &Voltage, float &Capacity_AH, unsigned long &dischargeTime_s, float &Current);
+void sendOscillogramToSerial(float &Time_s, float &Voltage, float &Current, float &Capacity_AH);
+// void printTableCaption(const char * msg);
+void printTableCaption(const __FlashStringHelper *ifsh);
+void drawLog(byte shiftFromLastRec, bool drawHeader = true);
+void checkCommandsFromSerial();
+void saveRecordToEEPROM(AccumCapacityRecord &capacityRecord, bool rewriteLastRecord = false);
 
 // Variables created by the build process
 // when the sketch is compiled
@@ -133,115 +245,6 @@ void setup() {
 	attachInterrupt(0, isrCLK, CHANGE);
 	attachInterrupt(1, isrDT, CHANGE);
 }
-
-unsigned long lastTimeMeasure_us = 0;
-unsigned long lastTimeSerial_us = 0;
-bool enableSendMeasurementsToSerial;
-bool enableSendOscillogramToSerial;
-bool usbConnected;
-bool prevUsbConnected;
-
-bool enableDischarge;
-u16 prevPwmValueForCurrent;
-
-unsigned long dischargeTime_s; 
-unsigned long timeAccum_us; 
-float accumCapacity_AH;
-float lastSavedAccumCapacity_AH;
-float threshholdVoltage; //Log capacity when reaching threshhold voltage
-
-constexpr unsigned long us_in_hour = 60UL * 60 * 1000 * 1000;
-void printTime(unsigned long time_s, byte startXpos, byte startYpos);
-void sendMeasurementsToSerial(float &Voltage, float &Capacity_AH, unsigned long &dischargeTime_s, float &Current);
-void sendOscillogramToSerial(float &Time_s, float &Voltage, float &Current, float &Capacity_AH);
-// void printTableCaption(const char * msg);
-void printTableCaption(const __FlashStringHelper *ifsh);
-void drawLog(byte shiftFromLastRec, bool drawHeader = true);
-void checkCommandsFromSerial();
-
-//To measure the time required to draw to the screen buffer and output the buffer to the display
-// #define debugTimings
-#ifdef debugTimings
-void sendTimeDebugInfoToSerial(const __FlashStringHelper *msg, byte marker = 0);
-#endif
-
-struct AccumCapacityRecord
-{
-	float Voltage;
-	float Current;
-	float Capacity_AH;
-	unsigned long dischargeTime_s;
-};
-void saveRecordToEEPROM(AccumCapacityRecord &capacityRecord, bool rewriteLastRecord = false);
-
-// need to to add "constexpr" in EEPROM.h in this line:
-//    constexpr uint16_t length()                    { return E2END + 1; }
-constexpr byte numOfRecordsInEEPROM = (EEPROM.length() / sizeof(AccumCapacityRecord)) - 1;
-constexpr byte offssetOfLogRecordsInEEPROM = 4; // for storing indexOfLastRecordInEEPROM
-
-constexpr byte charWidth = 6;
-constexpr byte charHeight = 10;
-constexpr byte yellowHeaderHeight = 16;
-constexpr byte tableHeaderHeight = yellowHeaderHeight;
-constexpr byte tableHeight = displayHeight - tableHeaderHeight;
-// 64 (displayHeight) - 16 (tableHeaderHeight) = 48
-// 48 / charHeight (10) = 4.8, round up to 5 
-constexpr byte linesOfLogOnScreen = round(float(tableHeight) / charHeight); 
-constexpr byte additionalSpacingForFirstLine = 2;
-
-enum class Screen: byte {
-	main,
-	setCurrent,
-	setDischargeVoltage,
-	// measureRin,
-	viewLog,
-	sleep
-};
-Screen screen;
-
-enum class ClickAction: byte {
-	startStopDischarge,
-	// stopDischarge,
-	setCurrent,
-	endSetCurrent,
-	setDischargeVoltage,
-	endSetDischargeVoltage,
-	// measureRin,
-	viewLog,
-	endViewLog,
-	sleep
-};
-ClickAction clickAction;
-
-enum class RotateAction: byte {
-	changeDisplayMode,
-	changeCurrent,
-	changeDischargeVoltage,
-	scrollLog,
-};
-RotateAction rotateAction;
-
-bool debugMode;
-bool showFreeRAM;
-// For scrolling log
-byte shiftFromLastRec; 
-unsigned long timeDischargeStarted;
-unsigned long timeDischargeStopped;
-bool rewriteLastRecord;
-unsigned long timeOscillogramStarted_us;
-u16 oscilPeriod_ms;
-float accumVoltage;
-
-enum class MeasureRinStatus: byte {
-	notMeasured,
-	measuredVoltageStart,
-	measuredVoltageEnd
-};
-
-struct MeasureRin {
-	float voltageStart, voltageEnd, current;  
-	MeasureRinStatus status;
-} measureRin;
 
 void powerdownSleep() {
 	// screen = Screen::off;
