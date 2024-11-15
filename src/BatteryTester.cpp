@@ -22,7 +22,7 @@ constexpr float Rup = 80500.0;
 constexpr float Rdown = 20100.0;
 constexpr float resistorDividerCoef = (Rup + Rdown) / Rdown;
 
-constexpr float currentShuntResistance = 0.99;
+float currentShuntResistance = 1.0;
 float stopDischargeVoltage = 3.0;
 float wantedDischargeCurrent = 0.1; // Initial value 
 constexpr float maxDischargeCurrent = 1; 
@@ -117,10 +117,17 @@ struct AccumCapacityRecord
 	unsigned long dischargeTime_s;
 };
 
+
+struct EEPROMsettings {
+	byte indexOfLastRecordInEEPROM;
+	byte reserved1, reserved2, reserved3;
+	float currentShuntResistance;
+}; // only for calculating offsets in EEPROM for settings
+
 // need to to add "constexpr" in EEPROM.h in this line:
 //    constexpr uint16_t length()                    { return E2END + 1; }
 constexpr byte numOfRecordsInEEPROM = (EEPROM.length() / sizeof(AccumCapacityRecord)) - 1;
-constexpr byte offssetOfLogRecordsInEEPROM = 4; // for storing indexOfLastRecordInEEPROM
+constexpr byte offsetOfLogRecordsInEEPROM = sizeof(AccumCapacityRecord); // for storing settings
 
 
 enum class Screen: byte {
@@ -129,6 +136,7 @@ enum class Screen: byte {
 	setDischargeVoltage,
 	// measureRin,
 	viewLog,
+	setShuntResistance,
 	sleep
 };
 Screen screen;
@@ -143,6 +151,8 @@ enum class ClickAction: byte {
 	// measureRin,
 	viewLog,
 	endViewLog,
+	setShuntResistance,
+	endSetShuntResistance,
 	sleep
 };
 ClickAction clickAction;
@@ -152,6 +162,7 @@ enum class RotateAction: byte {
 	changeCurrent,
 	changeDischargeVoltage,
 	scrollLog,
+	changeShuntResistance,
 };
 RotateAction rotateAction;
 
@@ -241,6 +252,11 @@ void setup() {
 	display.setFontPosBottom(); // to eliminate correction y by fontBaseline when printing text on display every time
 
 	timeShowDescription = micros() + 3000000;
+
+	float temp;
+	EEPROM.get(__builtin_offsetof(EEPROMsettings, currentShuntResistance), temp);
+	if (!isnan(temp) && (temp > 0) && (temp < 100)) 
+		currentShuntResistance = temp;
 
 	attachInterrupt(0, isrCLK, CHANGE);
 	attachInterrupt(1, isrDT, CHANGE);
@@ -354,6 +370,17 @@ void loop() {
 					shiftFromLastRec = 0;
 				break;
 
+				case ClickAction::setShuntResistance: 
+					rotateAction = RotateAction::changeShuntResistance;
+					clickAction = ClickAction::endSetShuntResistance;
+				break;
+				case ClickAction::endSetShuntResistance: 
+					EEPROM.put(__builtin_offsetof(EEPROMsettings, currentShuntResistance), currentShuntResistance);
+
+					rotateAction = RotateAction::changeDisplayMode;
+					clickAction = ClickAction::setShuntResistance;
+				break;
+
 				case ClickAction::sleep:
 					powerdownSleep();
 					// sleep here until interrupt 
@@ -401,6 +428,10 @@ void loop() {
 
 					case Screen::viewLog:
 						clickAction = ClickAction::viewLog;
+					break;
+
+					case Screen::setShuntResistance:
+						clickAction = ClickAction::setShuntResistance;
 					break;
 
 					case Screen::sleep:
@@ -467,6 +498,43 @@ void loop() {
 				}
 			break;
 
+			case RotateAction::changeShuntResistance: {
+				float mult = 1;
+				if (currentShuntResistance < 10)
+					mult = 0.1;
+				bool changed = false;	
+
+				if (encoder.isRight()) {
+					currentShuntResistance += 0.1 * mult;
+					changed = true;	
+				}
+				if (encoder.isLeft()) {
+					currentShuntResistance -= 0.1 * mult; 
+					changed = true;	
+				}
+				
+				if (encoder.isFastR()) {
+					currentShuntResistance += 1 * mult; 
+					changed = true;	
+				}
+				if (encoder.isFastL()) {
+					currentShuntResistance -= 1 * mult; 
+					changed = true;	
+				}
+
+				if (encoder.isRightH()) {
+					currentShuntResistance += 0.01 * mult; 
+					changed = true;	
+				}
+				if (encoder.isLeftH()) {
+					currentShuntResistance -= 0.01 * mult; 
+					changed = true;	
+				}
+
+				if (changed) {
+					if (currentShuntResistance <= 0) currentShuntResistance = 0.01;
+				}
+			} break;
 		} 
 
 		if ((clickAction == ClickAction::setCurrent) && encoder.isHolded())
@@ -711,14 +779,14 @@ void loop() {
 						display.print(wantedDischargeCurrent, 3); 
 					}
 
-					x = displayWidth - 3*charWidth - 3;
+					x = displayWidth - 4*charWidth - 1;
 					display.setCursor(x, y);
 					if (clickAction == ClickAction::setCurrent)
-						display.print(F("Set")); 
+						display.print(F("Edit")); 
 					if (clickAction == ClickAction::endSetCurrent)
 						display.print(F("OK")); 
 
-					display.drawFrame(x - 2, y - charHeight - 1, 3*charWidth + 4, charHeight + 3);
+					display.drawFrame(x - 2, y - charHeight - 1, 4*charWidth + 3, charHeight + 3);
 				}
 
 				if (screen == Screen::setDischargeVoltage) {
@@ -728,20 +796,48 @@ void loop() {
 					if (showDescription)
 						display.print(F("Stop Voltage"));
 					else {	
-						display.print(F("Stop Volt:      V")); 
+						display.print(F("Stp Volt:      V")); 
 
-						display.setCursor(11*charWidth, y);
+						display.setCursor(10*charWidth, y);
 						display.print(stopDischargeVoltage); 
 					}
 
-					x = displayWidth - 3*charWidth - 3;
+					x = displayWidth - 4*charWidth - 1;
 					display.setCursor(x, y);
 					if (clickAction == ClickAction::setDischargeVoltage)
-						display.print(F("Set")); 
+						display.print(F("Edit")); 
 					if (clickAction == ClickAction::endSetDischargeVoltage)
 						display.print(F("OK")); 
 
-					display.drawFrame(x - 2, y - charHeight - 1, 3*charWidth + 4, charHeight + 3);
+					display.drawFrame(x - 2, y - charHeight - 1, 4*charWidth + 3, charHeight + 3);
+				}
+
+				if (screen == Screen::setShuntResistance) {
+					display.setCursor(0, y);
+
+					bool showDescription = (curTime_us < timeShowDescription);
+
+					byte digits = 2;
+					if (currentShuntResistance < 10)
+						digits = 3;
+						
+					if (showDescription)
+						display.print(F("Shunt resistance"));
+					else {	
+						display.print(F("Shunt:       Ohm")); 
+
+						display.setCursor(7*charWidth, y);
+						display.print(currentShuntResistance, digits);
+					}
+
+					x = displayWidth - 4*charWidth - 1;
+					display.setCursor(x, y);
+					if (clickAction == ClickAction::setShuntResistance)
+						display.print(F("Edit")); 
+					if (clickAction == ClickAction::endSetShuntResistance)
+						display.print(F(" OK ")); 
+
+					display.drawFrame(x - 2, y - charHeight - 1, 4*charWidth + 3, charHeight + 3);
 				}
 
 				if (screen != Screen::viewLog) {
@@ -940,7 +1036,7 @@ void drawLog(byte shiftFromLastRec, bool drawHeader) {
 		byte ri = (lineIndex + indexOfLastRecordInEEPROM + numOfRecordsInEEPROM - shiftFromLastRec - linesOfLogOnScreen) % numOfRecordsInEEPROM;
 
 		AccumCapacityRecord capacityRecord;
-		EEPROM.get(offssetOfLogRecordsInEEPROM + ri * sizeof(AccumCapacityRecord), capacityRecord);
+		EEPROM.get(offsetOfLogRecordsInEEPROM + ri * sizeof(AccumCapacityRecord), capacityRecord);
 
 		drawOneLogLine(lineIndex, capacityRecord);
 	}
@@ -1025,7 +1121,7 @@ void saveRecordToEEPROM(AccumCapacityRecord &capacityRecord, bool rewriteLastRec
 		EEPROM[0] = indexOfLastRecordInEEPROM;
 	}	
 
-	EEPROM.put(offssetOfLogRecordsInEEPROM + indexOfLastRecordInEEPROM * sizeof(AccumCapacityRecord), capacityRecord);
+	EEPROM.put(offsetOfLogRecordsInEEPROM + indexOfLastRecordInEEPROM * sizeof(AccumCapacityRecord), capacityRecord);
 }
 
 void checkCommandsFromSerial() {
@@ -1049,7 +1145,7 @@ void checkCommandsFromSerial() {
 				byte ri = (i + indexOfLastRecordInEEPROM + 1) % numOfRecordsInEEPROM;
 
 				AccumCapacityRecord capacityRecord;
-				EEPROM.get(offssetOfLogRecordsInEEPROM + ri * sizeof(AccumCapacityRecord), capacityRecord);
+				EEPROM.get(offsetOfLogRecordsInEEPROM + ri * sizeof(AccumCapacityRecord), capacityRecord);
 
 				sendMeasurementsToSerial(capacityRecord.Voltage, capacityRecord.Capacity_AH, 
 					capacityRecord.dischargeTime_s, capacityRecord.Current);
@@ -1065,6 +1161,14 @@ void checkCommandsFromSerial() {
 			wantedDischargeCurrent = str.toFloat();
 			if (wantedDischargeCurrent < 0) wantedDischargeCurrent = 0;
 			if (wantedDischargeCurrent > maxDischargeCurrent) wantedDischargeCurrent = maxDischargeCurrent;
+		}
+
+		if (str.startsWith(F("set shunt"))) {
+			str.remove(0, 9);
+			str.trim();
+			currentShuntResistance = str.toFloat();
+			if (currentShuntResistance <= 0) currentShuntResistance = 1.0;
+			EEPROM.put(__builtin_offsetof(EEPROMsettings, currentShuntResistance), currentShuntResistance);
 		}
 
 		if (str.startsWith(F("set oscil period"))) {
