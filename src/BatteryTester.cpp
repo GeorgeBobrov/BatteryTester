@@ -391,6 +391,7 @@ void loop() {
 
 		switch (rotateAction) {
 			case RotateAction::changeDisplayMode: {
+				bool changed = false;	
 				if (encoder.isRight()) {
 					if (screen == Screen::sleep)
 						screen = Screen(0);
@@ -400,6 +401,7 @@ void loop() {
 					timeShowDescription = curTime_us + 1000000;
 					if (screen == Screen::main)
 						timeShowDescription = curTime_us;
+					changed = true;	
 				}
 
 				if (encoder.isLeft()) {
@@ -411,34 +413,36 @@ void loop() {
 					timeShowDescription = curTime_us + 1000000;
 					if (screen == Screen::main)
 						timeShowDescription = curTime_us;
+					changed = true;	
 				}
 
-				switch (screen) {
-					case Screen::main:
-						clickAction = ClickAction::startStopDischarge;
-					break;
+				if (changed) 
+					switch (screen) {
+						case Screen::main:
+							clickAction = ClickAction::startStopDischarge;
+						break;
 
-					case Screen::setCurrent:
-						clickAction = ClickAction::setCurrent;
-					break;
+						case Screen::setCurrent:
+							clickAction = ClickAction::setCurrent;
+						break;
 
-					case Screen::setDischargeVoltage:
-						clickAction = ClickAction::setDischargeVoltage;
-					break;
+						case Screen::setDischargeVoltage:
+							clickAction = ClickAction::setDischargeVoltage;
+						break;
 
-					case Screen::viewLog:
-						clickAction = ClickAction::viewLog;
-					break;
+						case Screen::viewLog:
+							clickAction = ClickAction::viewLog;
+						break;
 
-					case Screen::setShuntResistance:
-						clickAction = ClickAction::setShuntResistance;
-					break;
+						case Screen::setShuntResistance:
+							clickAction = ClickAction::setShuntResistance;
+						break;
 
-					case Screen::sleep:
-						clickAction = ClickAction::sleep;
-					break;
+						case Screen::sleep:
+							clickAction = ClickAction::sleep;
+						break;
 
-				}
+					}
 
 			} break;
 
