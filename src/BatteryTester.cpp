@@ -174,7 +174,7 @@ enum class MeasureRinStatus: byte {
 };
 
 struct MeasureRin {
-	float voltageStart, voltageEnd, current;  
+	float voltageStart, voltageEnd, currentStart, currentEnd;  
 	MeasureRinStatus status;
 } measureRin;
 
@@ -590,7 +590,7 @@ void loop() {
 
 			if (measureRin.status == MeasureRinStatus::measuredVoltageStart) {
 				measureRin.voltageEnd = accumVoltage;
-				measureRin.current = loadCurrent;
+				measureRin.currentEnd = loadCurrent;
 				measureRin.status = MeasureRinStatus::measuredVoltageEnd;
 			}
 		}		
@@ -648,6 +648,7 @@ void loop() {
 
 			if (measureRin.status == MeasureRinStatus::notMeasured) {
 				measureRin.voltageStart = accumVoltage;
+				measureRin.currentStart = loadCurrent;
 				measureRin.status = MeasureRinStatus::measuredVoltageStart;
 			}
 
@@ -880,7 +881,8 @@ void loop() {
 
 
 					if (measureRin.status == MeasureRinStatus::measuredVoltageEnd) {
-						float Rin = (measureRin.voltageStart - measureRin.voltageEnd) / measureRin.current;
+						float Rin = (measureRin.voltageStart - measureRin.voltageEnd) / 
+							(measureRin.currentEnd - measureRin.currentStart);
 
 						x = 17*charWidth;
 						display.setCursor(x, y);
