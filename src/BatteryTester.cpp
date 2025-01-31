@@ -93,6 +93,7 @@ float lastSavedAccumCapacity_AH;
 float threshholdVoltage; //Log capacity when reaching threshhold voltage
 
 bool debugMode;
+bool debugLedState;
 bool showFreeRAM;
 // For scrolling log
 byte shiftFromLastRec; 
@@ -544,6 +545,10 @@ void loop() {
 		if ((clickAction == ClickAction::setCurrent) && encoder.isHolded())
 			debugMode = !debugMode;
 
+		if (debugMode) {
+			debugLedState = !debugLedState; 
+			digitalWrite(LED_BUILTIN, debugLedState);	
+		}
 
 		// int accumVoltageADC = analogRead(pinAnVoltage);
 		// Averaging a number of measurements for more stable readings
@@ -923,6 +928,10 @@ void loop() {
 						display.setCursor(0, y);
 						display.print(F("Time"));
 						printTime(time_s, 50, y);
+					}
+
+					if (debugMode && debugLedState) {
+						display.drawPixel(30, 60);	
 					}
 				}
 
