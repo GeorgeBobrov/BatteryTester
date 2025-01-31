@@ -217,7 +217,7 @@ unsigned long timeShowDescription;
 void setup() {
 	//set board_build.f_cpu = 8000000L in platformio.ini and 
 	//divide real freq 16000000 by 2 by SystemPrescaler (for working on low voltages)
-	power.setSystemPrescaler(PRESCALER_2);
+	// power.setSystemPrescaler(PRESCALER_2); //crystal changed from 16MHz to 8MHz, so no need use SystemPrescaler anymore
 
 	//set Timer1 frequency to 31372 (set timer prescaler 1)
 	// TCCR1B = (TCCR1B & 0xF8) | 1; //No need, using GyverPWM
