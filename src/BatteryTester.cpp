@@ -14,7 +14,7 @@ constexpr byte pinEnableDischarge = 4;
 constexpr byte pinPwmSetCurrent = 9;
 constexpr byte pinMeasureVoltage = A7;
 constexpr byte pinMeasureCurrent = A6;
-constexpr byte pinUsbConnected = 12;
+constexpr byte pinUsbConnected = A3;
 
 constexpr float internalReferenceVoltage = 1.1;
 // Resistor divider for measure accum voltage
@@ -234,12 +234,12 @@ void setup() {
 	pinMode(8, INPUT_PULLUP);
 	pinMode(10, INPUT_PULLUP);
 	pinMode(11, INPUT_PULLUP);
-	pinMode(pinUsbConnected, INPUT);
+	pinMode(12, INPUT_PULLUP);
 
 	pinMode(A0, INPUT_PULLUP);
 	pinMode(A1, INPUT_PULLUP);
 	pinMode(A2, INPUT_PULLUP);
-	pinMode(A3, INPUT_PULLUP);
+	pinMode(pinUsbConnected, INPUT);
 		
 
 	analogReference(INTERNAL);
@@ -545,10 +545,10 @@ void loop() {
 		if ((clickAction == ClickAction::setCurrent) && encoder.isHolded())
 			debugMode = !debugMode;
 
-		if (debugMode) {
+		if (debugMode) 
 			debugLedState = !debugLedState; 
-			digitalWrite(LED_BUILTIN, debugLedState);	
-		}
+		
+//---------------------------------- Calculations --------------------------------------- 	
 
 		// int accumVoltageADC = analogRead(pinAnVoltage);
 		// Averaging a number of measurements for more stable readings
@@ -623,9 +623,9 @@ void loop() {
 			// The red LED used as a stabilitron to limit PWM amplitude voltage (see schematic)
 			constexpr float redLedVoltage = 1.61;
 			// Since the charge and discharge resistances are not equal, a correction is needed 
-			constexpr float PwmCorrectionCoef = 1.04;
-			constexpr float PwmStepInV = (redLedVoltage / MAX_PWM_VALUE) * PwmCorrectionCoef;
-			u16 pwmValueForCurrent = wantedShuntVoltage / PwmStepInV;
+			constexpr float pwmCorrectionCoef = 1.04;
+			constexpr float pwmStepInV = (redLedVoltage / MAX_PWM_VALUE) * pwmCorrectionCoef;
+			u16 pwmValueForCurrent = wantedShuntVoltage / pwmStepInV;
 			pwmValueForCurrent = min(pwmValueForCurrent, MAX_PWM_VALUE);
 			if ((pwmValueForCurrent > prevPwmValueForCurrent * 1.15) ||
 				(pwmValueForCurrent == 0) ||
@@ -675,9 +675,8 @@ void loop() {
 				lastSavedAccumCapacity_AH = accumCapacity_AH;
 			}
 
-		// save AccumCapacityRecord every 500 mAh (relevant for LiFePo accums, since their voltage changes slightly during discharge) 
-		if ((accumCapacity_AH > lastSavedAccumCapacity_AH + 0.500) && enableDischarge) 
-		{
+		// save AccumCapacityRecord every 500 mAh (relevant for LiFePO accums, since their voltage changes slightly during discharge) 
+		if ((accumCapacity_AH > lastSavedAccumCapacity_AH + 0.500) && enableDischarge) {
 			AccumCapacityRecord capacityRecord{.Voltage = accumVoltage, .Current = loadCurrent, 
 				.Capacity_AH = accumCapacity_AH, .dischargeTime_s = dischargeTime_s};
 
@@ -930,9 +929,9 @@ void loop() {
 						printTime(time_s, 50, y);
 					}
 
-					if (debugMode && debugLedState) {
+					if (debugMode && debugLedState) 
 						display.drawPixel(30, 60);	
-					}
+					
 				}
 
 				if (showFreeRAM) {
@@ -958,6 +957,9 @@ void loop() {
 			} while ( display.nextPage() );
 
 		}
+
+		if (debugMode) 
+			digitalWrite(LED_BUILTIN, debugLedState);	
 
 		checkCommandsFromSerial();
 
